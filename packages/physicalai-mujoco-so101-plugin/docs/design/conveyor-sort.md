@@ -87,7 +87,25 @@ Decisions made while building, including changes from the plan above:
 - **Textures are UV-mapped meshes.** mjviser 0.0.14 draws primitives in a flat color and reduces cube maps to one color per face, so the belt, the cracked items and the reject bin first rendered white in the browser viewer, even though the camera streams were fine. Cracked items now carry a UV-mapped visual mesh over an invisible collision primitive, so their physics is unchanged. The belt has a UV-mapped visual mesh on the moving slab, and the bin mesh has box-projected UVs. `test_conveyor.py` checks that no textured primitive or cube map comes back.
 - **Home pose:** shoulder_lift −1.4, elbow_flex 0.7, wrist_flex 1.6. The gripper hovers about 8 cm above the near rail. Reset also applies it.
 
-Next steps: a scripted demonstrator (IK plus intercepting moving items), prompt templates for pi0.5, a sweep script for success against belt speed, and a decision on how cracks become visible to the policy.
+### Scripted demonstrator
+
+`conveyor_demo.ConveyorDemonstrator` uses privileged state and writes the arm's joint targets directly. `scripts/run_conveyor_demo.py` scores it, sweeps belt speeds, or records a video. The data path (a virtual leader in Studio, or a headless dataset writer) is still to be decided.
+
+| Belt speed                  | 1 cm/s | 2 cm/s | 3 cm/s | 5 cm/s | 7 cm/s | 10 cm/s |
+| --------------------------- | ------ | ------ | ------ | ------ | ------ | ------- |
+| Sorted correctly (90 items) | 100%   | 98.9%  | 100%   | 100%   | 81.1%  | 47.8%   |
+
+What it took to get there. Each of these is also a constraint for learned policies and for human teleoperation:
+
+- **IK:** position is the primary task, with "fingers down, jaw at yaw" in the null space. Joints at a limit drop out (an active set), and each iteration's step is capped. The SO-101 has five arm joints and cannot always point straight down: the gripper tilts up to ~16° at the ends of the belt.
+- **Pick window y ∈ [−0.15, 0.10]:** further upstream the gripper tilts 4–5°, and cubes get squeezed out sideways into the far rail.
+- **Close along the belt:** the moving jaw pushes the item about 1 cm toward the fixed jaw. Across the belt, that push shoved items into a rail.
+- **Two jaw variants (180° apart):** the demonstrator prefers the one that is upright enough and within the wrist's range, then the smaller wrist turn. A tilted gripper dips the open moving jaw's tip into the belt.
+- **Stiff belt drive (kv 500, ±500 N):** closing presses the item into the belt, and with the first drive (kv 20, ±20 N) that friction pushed the belt _backwards_ at up to 0.28 m/s, spilling new items out of the back of the hood.
+- **Item damping (0.0002):** without it, cylinders wobbled in the bins forever like spinning coins.
+- **Scoring:** an item that is off the belt and out of the gripper for 10 s is scored wherever it is, for example balanced on a bin rim. An episode always ends.
+
+Next steps: pick the data path, prompt templates for pi0.5, and a decision on how cracks become visible to the policy.
 
 ## Open questions
 

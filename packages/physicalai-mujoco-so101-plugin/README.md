@@ -368,6 +368,19 @@ At 224 px the overview camera shows item colors clearly, but not cracks: an item
 
 The scene's textures and item pool (`conveyor_items.xml`) come from `scripts/generate_conveyor_assets.py`. The visual meshes for the conveyor frame, hood and bins come from `scripts/build_conveyor_meshes.py`, run with `blender --background --factory-startup --python scripts/build_conveyor_meshes.py`. Collisions use primitives in `scene.xml`, so keep the dimensions in both files in sync. Give every textured surface UV coordinates and a 2D texture: the browser viewer draws primitives in a flat color and reduces cube maps to one color per face, while the camera streams render either.
 
+#### Scripted demonstrator
+
+`physicalai_mujoco_so101_plugin.conveyor_demo.ConveyorDemonstrator` sorts items using privileged simulation state (item poses, the belt speed, the sorting rule). It is meant for generating consistent demonstrations, not as a policy. Each cycle, it waits over the belt, tracks the most downstream item in the pick window, grasps it with the jaw closing along the belt, and drops it in the bin the rule assigns. It writes the arm's joint targets directly and runs headless:
+
+```bash
+cd packages/physicalai-mujoco-so101-plugin
+uv run python scripts/run_conveyor_demo.py --speed 0.03 --episodes 3             # score
+uv run python scripts/run_conveyor_demo.py --sweep 0.01 0.03 0.05 0.07 --seeds 3  # success vs belt speed
+uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4     # overview + orbit video
+```
+
+Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sorted correctly at 1–5 cm/s, 81% at 7 cm/s and 48% at 10 cm/s. Above about 5 cm/s, items arrive faster than one pick-and-place cycle (about 2.3 s).
+
 ### Switching scenes at runtime
 
 Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}`. The switch happens on the next control cycle:

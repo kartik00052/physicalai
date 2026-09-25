@@ -73,12 +73,17 @@ class ConveyorConfig:
     """Seconds an item must rest before it is scored and parked."""
     rest_max_z: float = 0.045
     """Items resting higher than this (held, or on the belt) are not scored."""
+    stuck_s: float = 10.0
+    """Items off the belt and out of the gripper this long are scored wherever they are and however they
+    move (balanced on a bin rim, wobbling in a bin), so an episode always ends."""
     bin_half: float = 0.046
     """Half the inner width of a bin, for the in-bin test."""
 
 
 @dataclass
-class _Item:
+class ConveyorItem:
+    """One pool item: its MuJoCo ids, what it looks like, and where the rule sends it."""
+
     name: str
     shape: str
     color: str
@@ -91,6 +96,7 @@ class _Item:
 
     @property
     def target_bin(self) -> str:
+        """Bin this item belongs in under the fixed rule."""
         if self.cracked or self.color not in BIN_COLORS:
             return REJECT_BIN
         return self.color
@@ -120,7 +126,7 @@ class ConveyorSort:
     def __init__(
         self,
         model: object,
-        items: list[_Item],
+        items: list[ConveyorItem],
         bins: dict[str, int],
         belt_qpos_adr: int,
         belt_actuator: int,
@@ -138,8 +144,15 @@ class ConveyorSort:
         self._active = True
         self._travel = 0.0
         self._last_belt_q: float | None = None
-        self._on_belt: dict[str, _Item] = {}
+        self._on_belt: dict[str, ConveyorItem] = {}
         self._rest_since: dict[str, float] = {}
+        self._off_since: dict[str, float] = {}
+        # Arm bodies (everything under the robot's root body) for the in-gripper test.
+        geom_body = np.asarray(model.geom_bodyid, dtype=np.int64)
+        root = np.asarray(model.body_rootid)
+        base = _robot_root(model)
+        self._geom_body = geom_body
+        self._robot_body = (root == base) if base >= 0 else np.zeros(int(model.nbody), dtype=bool)
         self._episode = _Episode()
         self._episode_count = 0
         self._last_episode: dict[str, int] | None = None
@@ -222,6 +235,24 @@ class ConveyorSort:
         _ = dwell_s
 
     @property
+    def items_in_play(self) -> tuple[ConveyorItem, ...]:
+        """Items fed onto the belt and not yet scored (on the belt, in the gripper, or falling)."""
+        return tuple(self._on_belt.values())
+
+    def is_in_play(self, item: ConveyorItem) -> bool:
+        """Whether `item` has been fed and not yet scored.
+
+        Returns:
+            ``True`` while the item is on the belt, in the gripper, or falling.
+        """
+        return item.name in self._on_belt
+
+    @property
+    def bin_body_ids(self) -> dict[str, int]:
+        """MuJoCo body id of each bin, keyed by bin name (``red``, ..., ``reject``)."""
+        return dict(self._bins)
+
+    @property
     def belt_speed(self) -> float:
         """Belt surface speed in m/s."""
         return self._config.belt_speed
@@ -235,6 +266,7 @@ class ConveyorSort:
         """Start a fresh episode after an explicit reset (the scene reset parks the items)."""
         self._on_belt.clear()
         self._rest_since.clear()
+        self._off_since.clear()
         self._episode = _Episode(next_spawn_at=self._travel)
         self._last_belt_q = None
 
@@ -298,7 +330,7 @@ class ConveyorSort:
         jitter = float(self._rng.uniform(-1.0, 1.0)) * self._config.spawn_spacing_jitter
         episode.next_spawn_at = self._travel + self._config.spawn_spacing + jitter
 
-    def _pick_parked_item(self) -> _Item | None:
+    def _pick_parked_item(self) -> ConveyorItem | None:
         parked = [item for item in self._items if item.name not in self._on_belt]
         if not parked:
             return None
@@ -306,7 +338,7 @@ class ConveyorSort:
         preferred = [item for item in parked if item.cracked == cracked] or parked
         return preferred[int(self._rng.integers(len(preferred)))]
 
-    def _place_on_belt(self, model: object, data: object, item: _Item) -> None:
+    def _place_on_belt(self, model: object, data: object, item: ConveyorItem) -> None:
         import mujoco  # noqa: PLC0415
 
         cfg = self._config
@@ -320,10 +352,12 @@ class ConveyorSort:
         data.qvel[dof + 1] = -cfg.belt_speed
         self._on_belt[item.name] = item
         self._rest_since.pop(item.name, None)
+        self._off_since.pop(item.name, None)
         mujoco.mj_forward(model, data)
 
     def _score_items(self, data: object) -> None:
         now = float(data.time)
+        held = self._bodies_touching_robot(data)
         for name, item in list(self._on_belt.items()):
             pos = np.asarray(data.xpos[item.body_id])
             vel = float(np.linalg.norm(data.qvel[item.dof_adr : item.dof_adr + 3]))
@@ -332,13 +366,21 @@ class ConveyorSort:
             )
             if on_belt and pos[1] > self._config.belt_end_y:
                 self._rest_since.pop(name, None)
+                self._off_since.pop(name, None)
                 continue
-            if vel > self._config.settle_speed or pos[2] > self._config.rest_max_z:
-                # Moving, or held/stuck up in the air: not settled anywhere yet.
+            if item.body_id in held:
+                # In the gripper: neither resting nor stuck, however still it is.
                 self._rest_since.pop(name, None)
+                self._off_since[name] = now
                 continue
-            since = self._rest_since.setdefault(name, now)
-            if now - since < self._config.settle_s:
+            off_since = self._off_since.setdefault(name, now)
+            if vel > self._config.settle_speed:
+                self._rest_since.pop(name, None)
+            rest_since = self._rest_since.setdefault(name, now) if vel <= self._config.settle_speed else now
+            settled = pos[2] <= self._config.rest_max_z and now - rest_since >= self._config.settle_s
+            # Stuck: off the belt and out of the gripper this long (balanced on a rim, wobbling...).
+            stuck = now - off_since >= self._config.stuck_s
+            if not (settled or stuck):
                 continue
             landed = self._bin_containing(data, pos)
             outcome: Outcome
@@ -350,6 +392,21 @@ class ConveyorSort:
             _park(data, item)
             del self._on_belt[name]
             self._rest_since.pop(name, None)
+            self._off_since.pop(name, None)
+
+    def _bodies_touching_robot(self, data: object) -> set[int]:
+        """Bodies in contact with any part of the arm (in practice: items in the gripper).
+
+        Returns:
+            Body ids touching the arm, excluding the arm's own bodies.
+        """
+        ncon = int(data.ncon)
+        if ncon == 0:
+            return set()
+        b1 = self._geom_body[np.asarray(data.contact.geom1[:ncon])]
+        b2 = self._geom_body[np.asarray(data.contact.geom2[:ncon])]
+        r1, r2 = self._robot_body[b1], self._robot_body[b2]
+        return {int(b) for b in np.concatenate([b2[r1 & ~r2], b1[r2 & ~r1]])}
 
     def _bin_containing(self, data: object, pos: np.ndarray) -> str | None:
         for name, body_id in self._bins.items():
@@ -398,11 +455,22 @@ def park_items(model: object, data: object) -> None:
     mujoco.mj_forward(model, data)
 
 
+def _robot_root(model: object) -> int:
+    """Id of the arm's root body.
+
+    Returns:
+        The ``base`` body id, or -1 when the model has no SO-101 arm.
+    """
+    import mujoco  # noqa: PLC0415
+
+    return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base"))
+
+
 def _clamp_speed(speed: float) -> float:
     return float(min(max(speed, 0.0), MAX_BELT_SPEED))
 
 
-def _discover_items(model: object) -> Iterator[_Item]:
+def _discover_items(model: object) -> Iterator[ConveyorItem]:
     """Yield pool items named ``item_<shape>_<color>[_cracked]`` with free joints."""
     import mujoco  # noqa: PLC0415
 
@@ -420,7 +488,7 @@ def _discover_items(model: object) -> Iterator[_Item]:
         half_height = _geom_half_height(model, geom)
         qpos_adr = int(model.jnt_qposadr[jnt])
         park = tuple(float(v) for v in model.qpos0[qpos_adr : qpos_adr + 3])
-        yield _Item(
+        yield ConveyorItem(
             name=name,
             shape=parts[0],
             color=parts[1],
@@ -453,7 +521,7 @@ def _geom_half_height(model: object, geom_id: int) -> float:
     return float(model.geom_rbound[geom_id])
 
 
-def _park(data: object, item: _Item) -> None:
+def _park(data: object, item: ConveyorItem) -> None:
     adr, dof = item.qpos_adr, item.dof_adr
     data.qpos[adr : adr + 3] = item.park_xyz
     data.qpos[adr + 3 : adr + 7] = (1.0, 0.0, 0.0, 0.0)

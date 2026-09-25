@@ -201,6 +201,7 @@
   </worldbody>
 
   <actuator>
-    <velocity name="conveyor_belt" joint="conveyor_belt" kv="20" forcerange="-20 20" ctrlrange="-0.2 0.2"/>
+    <!-- Stiff drive: a gripper pressing an item into the belt must not push the belt backwards. -->
+    <velocity name="conveyor_belt" joint="conveyor_belt" kv="500" forcerange="-500 500" ctrlrange="-0.2 0.2"/>
   </actuator>
 </mujoco>

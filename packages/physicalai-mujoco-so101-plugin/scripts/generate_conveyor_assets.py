@@ -37,6 +37,9 @@ BELT_PX = 64
 
 ITEM_HALF = 0.015  # 3 cm items
 ITEM_MASS = 0.02
+# Free-joint damping: kills the endless coin-like wobble of cylinders in a bin (angular decay
+# ~15 ms) while barely touching translation (linear decay ~100 s, far below belt friction).
+ITEM_DAMPING = 0.0002
 # Unused pool items wait in the lidded supply crate behind the robot (see scene.xml):
 # a 4 x 6 grid, outside the arm's +-110 deg pan range and the overview camera view.
 PARK_ORIGIN = (-0.4175, -0.1125)
@@ -96,7 +99,7 @@ def items_xml() -> str:
             geom = 'type="mesh" mesh="hex_prism"'
         lines += [
             f'  <body name="{name}" pos="{x:.4f} {y:.4f} {PARK_Z}">',
-            f'    <joint type="free" name="{name}:joint" damping="0" frictionloss="0" armature="0"/>',
+            f'    <joint type="free" name="{name}:joint" damping="{ITEM_DAMPING}" frictionloss="0" armature="0"/>',
         ]
         if rest:
             # Cracked: an invisible collision primitive (first, so it defines the item) plus a
