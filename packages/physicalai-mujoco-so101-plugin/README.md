@@ -5,11 +5,12 @@ Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https
 ## Features
 
 - Run a virtual SO-101 as a PhysicalAI transport owner
-- Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
+- Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
+- A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
 
 ## What this is for
 
@@ -53,6 +54,7 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 - **Scene**: pick another scene that fits the running robot (single-arm or bimanual). **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
+- **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
 - **Shutdown** asks for confirmation before stopping the owner.
@@ -202,7 +204,7 @@ Common options:
 - `--name <robot-name>`: transport name (must match Studio payload)
 - `--bimanual`: run two arms with the `garment_fold` scene by default
 - `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
-- `--scene <name>`: scene name (`single_pick_place` or `yahtzee`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
+- `--scene <name>`: scene name (`single_pick_place`, `yahtzee` or `conveyor_sort`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -264,6 +266,9 @@ curl -X POST http://127.0.0.1:8080/seed -H 'content-type: application/json' -d '
 curl -X POST http://127.0.0.1:8080/episode/auto-reset -H 'content-type: application/json' \
   -d '{"enabled": false, "dwell_s": 3.0}'
 
+# conveyor_sort only: set the belt speed in m/s (pause it with /episode/auto-reset enabled=false)
+curl -X POST http://127.0.0.1:8080/conveyor/belt-speed -H 'content-type: application/json' -d '{"speed": 0.05}'
+
 # Read and move free objects (world frame, metres; wxyz is optional)
 curl http://127.0.0.1:8080/objects
 curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type: application/json' \
@@ -286,6 +291,7 @@ curl -X POST http://127.0.0.1:8080/shutdown
 | `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                         |
 | `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                 |
 | `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported    |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt   |
 | `/objects`                  | GET    | Free-object joint names and world poses                                          |
 | `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object          |
 | `/shutdown`                 | POST   | Gracefully stop the simulation owner                                             |
@@ -339,6 +345,7 @@ The plugin ships with built-in scenes that provide different environments for th
 | ----------------------------- | --------------------------------------- | ------------ | ----------- |
 | `single_pick_place` (default) | One block and a target disc             | 1 cube       | target disc |
 | `yahtzee`                     | Six dice and a cup                      | 6 dice       | cup         |
+| `conveyor_sort`               | Sort items off a moving belt into bins  | 24-item pool | 4 bins      |
 | `garment_fold`                | Bimanual SO-101 with a flexible garment | garment      | none        |
 
 Start with a specific scene:
@@ -346,6 +353,20 @@ Start with a specific scene:
 ```bash
 uv run --no-sync physicalai-mujoco-so101 start --scene yahtzee
 ```
+
+### Conveyor sort
+
+`conveyor_sort` is a factory cell: items ride a belt past the arm and have to be sorted into bins before they reach the end.
+
+- **Items**: cubes, upright cylinders and hexagonal prisms, 3 cm across, in red, blue, green or purple. About 30% are cracked (a bold dark crack texture). Unused items wait in the lidded supply crate behind the robot, and the feed moves them onto the belt inside the entry hood.
+- **Bins**: red, blue and green bins plus a striped reject bin, each labelled on its floor (RED, BLUE, GREEN, REJECT) so the labels read upright in the overview camera.
+- **Rule**: cracked items and purple items (which have no bin of their own) go to the striped reject bin; the others go to the bin of their color. An item that rides off the end of the belt, or comes to rest anywhere else, is a miss.
+- **Episodes**: an episode feeds 10 items, 15 cm apart along the belt (so the spacing does not depend on the belt speed). Once every item is scored, the next episode starts. **Reset Scene** starts a fresh episode.
+- **Belt speed**: 3 cm/s by default, adjustable from 0 to 10 cm/s in the viewer or with `POST /conveyor/belt-speed`. **Home Arm** holds the gripper above the pick zone.
+
+At 224 px the overview camera shows item colors clearly, but not cracks: an item covers about 5 px. The wrist camera and the full-resolution overview show them.
+
+The scene's textures and item pool (`conveyor_items.xml`) come from `scripts/generate_conveyor_assets.py`. The visual meshes for the conveyor frame, hood and bins come from `scripts/build_conveyor_meshes.py`, run with `blender --background --factory-startup --python scripts/build_conveyor_meshes.py`. Collisions use primitives in `scene.xml`, so keep the dimensions in both files in sync. Give every textured surface UV coordinates and a 2D texture: the browser viewer draws primitives in a flat color and reduces cube maps to one color per face, while the camera streams render either.
 
 ### Switching scenes at runtime
 

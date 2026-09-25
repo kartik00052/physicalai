@@ -8,7 +8,7 @@ The simulation thread renders camera frames into per-camera
 reads the latest frame per client and encodes it as JPEG. Streams wait
 for new frames on the event loop (:meth:`FrameBuffer.async_waiter`), so a
 client costs a task rather than a pooled thread. Control requests (reset,
-scene switch, home, seed, auto-reset, object pose, shutdown) are enqueued
+scene switch, home, seed, auto-reset, belt speed, object pose, shutdown) are enqueued
 onto a command queue that the simulation thread drains, so MuJoCo
 *stepping* only ever happens on the simulation thread; the status callback
 passed to :func:`build_app` runs on the HTTP thread and is responsible for
@@ -91,6 +91,13 @@ class SetAutoResetCommand:
 
 
 @dataclass(frozen=True)
+class SetBeltSpeedCommand:
+    """Change the conveyor belt speed (m/s) in scenes that have a belt."""
+
+    speed: float
+
+
+@dataclass(frozen=True)
 class SetObjectPoseCommand:
     """Teleport a free object to a world pose and zero its velocity.
 
@@ -112,8 +119,18 @@ SimCommand = (
     | HomeCommand
     | SetSeedCommand
     | SetAutoResetCommand
+    | SetBeltSpeedCommand
     | SetObjectPoseCommand
 )
+
+MAX_BELT_SPEED = 0.10
+"""Largest accepted conveyor belt speed in m/s; keep in sync with ``conveyor.MAX_BELT_SPEED``."""
+
+
+class BeltSpeedRequest(BaseModel):
+    """Body for ``POST /conveyor/belt-speed``."""
+
+    speed: Annotated[float, Field(ge=0.0, le=MAX_BELT_SPEED)]
 
 
 class SeedRequest(BaseModel):
@@ -340,6 +357,7 @@ def build_app(
                 "home": "POST /home",
                 "seed": "POST /seed",
                 "auto_reset": "POST /episode/auto-reset",
+                "belt_speed": "POST /conveyor/belt-speed",
                 "objects": "/objects",
                 "object_pose": "POST /objects/{joint}/pose",
                 "shutdown": "POST /shutdown",
@@ -458,6 +476,13 @@ def _add_sim_control_routes(
             raise HTTPException(status_code=409, detail="The current scene has no episode auto-reset")
         commands.put(SetAutoResetCommand(enabled=request.enabled, dwell_s=request.dwell_s))
         return {"status": "queued", "enabled": request.enabled, "dwell_s": request.dwell_s}
+
+    @app.post("/conveyor/belt-speed")
+    def belt_speed(request: BeltSpeedRequest) -> dict[str, Any]:
+        if get_status().get("episode", {}).get("kind") != "conveyor":
+            raise HTTPException(status_code=409, detail="The current scene has no conveyor belt")
+        commands.put(SetBeltSpeedCommand(speed=request.speed))
+        return {"status": "queued", "speed": request.speed}
 
     @app.get("/objects")
     def objects() -> list[dict[str, Any]]:

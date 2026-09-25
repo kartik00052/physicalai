@@ -21,6 +21,7 @@ from physicalai_mujoco_so101_plugin.http_server import (
     HttpServer,
     ResetCommand,
     SetAutoResetCommand,
+    SetBeltSpeedCommand,
     SetObjectPoseCommand,
     SetSeedCommand,
     ShutdownCommand,
@@ -218,6 +219,22 @@ class TestAppEndpoints:
         app_context["status"]["episode"] = {"enabled": False}
         client = TestClient(app_context["app"])
         assert client.post("/episode/auto-reset", json={"enabled": True}).status_code == 409
+        assert app_context["commands"].empty()
+
+    def test_belt_speed_enqueues_command_for_conveyor_scenes(self, app_context: dict) -> None:
+        app_context["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
+        response = TestClient(app_context["app"]).post("/conveyor/belt-speed", json={"speed": 0.04})
+        assert response.status_code == 200
+        assert app_context["commands"].get_nowait() == SetBeltSpeedCommand(speed=0.04)
+
+    @pytest.mark.parametrize("body", [{}, {"speed": -0.01}, {"speed": 0.5}])
+    def test_belt_speed_rejects_invalid_bodies(self, app_context: dict, body: dict) -> None:
+        app_context["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
+        assert TestClient(app_context["app"]).post("/conveyor/belt-speed", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_belt_speed_conflicts_without_a_belt(self, client: TestClient, app_context: dict) -> None:
+        assert client.post("/conveyor/belt-speed", json={"speed": 0.02}).status_code == 409
         assert app_context["commands"].empty()
 
     def test_objects_lists_free_objects(self, client: TestClient) -> None:

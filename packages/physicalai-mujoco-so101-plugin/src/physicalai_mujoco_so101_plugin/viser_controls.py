@@ -31,12 +31,14 @@ import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_so101_plugin.http_server import (
+    MAX_BELT_SPEED,
     MAX_DWELL_S,
     MAX_SEED,
     MIN_DWELL_S,
     HomeCommand,
     ResetCommand,
     SetAutoResetCommand,
+    SetBeltSpeedCommand,
     SetObjectPoseCommand,
     SetSeedCommand,
     ShutdownCommand,
@@ -308,6 +310,7 @@ class _Handles:
     seed_number: Any = None
     auto_reset: Any = None
     dwell: Any = None
+    belt_speed: Any = None
     episode_status: Any = None
     drag_toggle: Any = None
     gizmos: dict[str, Any] = field(default_factory=dict)
@@ -341,7 +344,35 @@ def _downscale(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
 
 
+def _is_conveyor(episode: Mapping[str, Any]) -> bool:
+    return episode.get("kind") == "conveyor"
+
+
+def _score_text(score: Mapping[str, Any]) -> str:
+    correct, wrong, missed = (int(score.get(key, 0)) for key in ("correct", "wrong", "missed"))
+    return f"{correct} correct, {wrong} wrong, {missed} missed"
+
+
+def _conveyor_markdown(episode: Mapping[str, Any]) -> str:
+    state = "running" if episode.get("active", True) else "paused"
+    speed_cm = 100.0 * float(episode.get("belt_speed", 0.0))
+    lines = [
+        f"**Belt:** {state}, {speed_cm:.1f} cm/s",
+        (
+            f"**Episode {int(episode.get('episode_count', 0)) + 1}:** {int(episode.get('spawned', 0))}"
+            f"/{int(episode.get('items_per_episode', 0))} items fed, {_score_text(episode.get('score', {}))}"
+        ),
+    ]
+    last = episode.get("last_episode")
+    if last:
+        lines.append(f"**Last episode:** {_score_text(last)}")
+    lines.append(f"**Rule:** {episode.get('rule', '')}")
+    return "  \n".join(lines)
+
+
 def _episode_markdown(episode: Mapping[str, Any]) -> str:
+    if _is_conveyor(episode):
+        return _conveyor_markdown(episode)
     if not episode.get("active", True):
         phase = "paused"
     elif episode.get("phase") == "success_hold" and episode.get("countdown_s") is not None:
@@ -562,7 +593,42 @@ class SimControlPanel:
                 return
             self._submit(SetSeedCommand(seed=_seed_value()))
 
+    def _build_conveyor_controls(self, state: PanelState) -> None:
+        gui = self._server.gui
+        episode = state.episode
+        with gui.add_folder("Conveyor"):
+            running = gui.add_checkbox(
+                "Belt running",
+                initial_value=bool(episode.get("active", True)),
+                hint="Pause or resume the belt and the item feed",
+            )
+            speed = gui.add_slider(
+                "Belt speed (cm/s)",
+                min=0.0,
+                max=100.0 * MAX_BELT_SPEED,
+                step=0.5,
+                initial_value=100.0 * float(episode.get("belt_speed", 0.0)),
+            )
+            status = gui.add_markdown(_episode_markdown(episode))
+        self._handles.auto_reset = running
+        self._handles.belt_speed = speed
+        self._handles.episode_status = status
+
+        @running.on_update
+        def _on_running(event: object) -> None:
+            if not _is_server_event(event):
+                self._submit(SetAutoResetCommand(enabled=bool(running.value)))
+
+        @speed.on_update
+        def _on_speed(event: object) -> None:
+            if not _is_server_event(event):
+                value = min(max(float(speed.value) / 100.0, 0.0), MAX_BELT_SPEED)
+                self._submit(SetBeltSpeedCommand(speed=value))
+
     def _build_episode_controls(self, state: PanelState) -> None:
+        if _is_conveyor(state.episode):
+            self._build_conveyor_controls(state)
+            return
         gui = self._server.gui
         episode = state.episode
         with gui.add_folder("Episode"):
@@ -754,7 +820,10 @@ class SimControlPanel:
             episode = state.episode
             handles.auto_reset.value = bool(episode.get("active", True))
             with contextlib.suppress(TypeError, ValueError):
-                handles.dwell.value = float(episode.get("success_dwell_s", handles.dwell.value))
+                if handles.dwell is not None:
+                    handles.dwell.value = float(episode.get("success_dwell_s", handles.dwell.value))
+                if handles.belt_speed is not None:
+                    handles.belt_speed.value = 100.0 * float(episode.get("belt_speed", 0.0))
             handles.episode_status.content = _episode_markdown(episode)
 
     def _refresh_gizmos(self, state: PanelState) -> None:

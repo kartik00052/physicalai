@@ -27,6 +27,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     NUM_JOINTS,
     SO101_JOINT_ORDER,
 )
+from physicalai_mujoco_so101_plugin.conveyor import DEFAULT_BELT_SPEED
 from physicalai_mujoco_so101_plugin.spawn import sample_object_positions, write_freejoint_qpos
 
 if TYPE_CHECKING:
@@ -241,6 +242,7 @@ class MuJoCoSO101:
         self._seed: int | None = None
         self._auto_reset_active = True
         self._auto_reset_dwell_s = _DEFAULT_SUCCESS_DWELL_S
+        self._belt_speed = DEFAULT_BELT_SPEED
         self._free_joint_addrs: dict[str, tuple[int, int]] = {}
         # Poses re-applied after every step while a viewer drags an object.
         self._held_objects: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -476,11 +478,21 @@ class MuJoCoSO101:
             self._free_joint_bodies = joint_bodies
 
     def _init_episode_auto_reset(self) -> None:
+        from physicalai_mujoco_so101_plugin.conveyor import ConveyorSort  # noqa: PLC0415
         from physicalai_mujoco_so101_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
 
         if self._model is None:
             with self._state_lock:
                 self._episode_auto_reset = None
+            return
+        # Scenes with a conveyor belt get the conveyor controller instead of the
+        # cube-on-plate auto-reset; both expose the same episode interface.
+        conveyor = ConveyorSort.maybe_create(
+            self._model, rng=self._rng, belt_speed=self._belt_speed, active=self._auto_reset_active
+        )
+        if conveyor is not None:
+            with self._state_lock:
+                self._episode_auto_reset = conveyor
             return
         episode_auto_reset = EpisodeAutoReset.maybe_create(
             self._model,
@@ -1231,6 +1243,17 @@ class MuJoCoSO101:
             self._auto_reset_dwell_s,
         )
 
+    def _set_belt_speed(self, speed: float) -> None:
+        # Remembered across scene switches, like the auto-reset settings.
+        self._belt_speed = float(speed)
+        helper = self._episode_auto_reset
+        set_speed = getattr(helper, "set_belt_speed", None)
+        if set_speed is None:
+            logger.warning("Scene '{}' has no conveyor belt", self._current_scene_id)
+            return
+        with self._state_lock:
+            set_speed(self._belt_speed)
+
     def _home_targets(self) -> dict[str, float]:
         """Return the current scene's home joint positions (radians)."""
         if self._current_scene_id is None:
@@ -1503,6 +1526,7 @@ class MuJoCoSO101:
             HomeCommand,
             ResetCommand,
             SetAutoResetCommand,
+            SetBeltSpeedCommand,
             SetObjectPoseCommand,
             SetSeedCommand,
             ShutdownCommand,
@@ -1526,6 +1550,8 @@ class MuJoCoSO101:
             self._set_seed(command.seed)
         elif isinstance(command, SetAutoResetCommand):
             self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
+        elif isinstance(command, SetBeltSpeedCommand):
+            self._set_belt_speed(command.speed)
         elif isinstance(command, SetObjectPoseCommand):
             self._set_object_pose(command.joint, command.position, command.wxyz, hold=command.hold)
         elif isinstance(command, ShutdownCommand):
