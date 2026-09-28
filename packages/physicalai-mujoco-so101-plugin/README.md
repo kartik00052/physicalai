@@ -378,7 +378,7 @@ The scene's textures and item pool (`conveyor_items.xml`) come from `scripts/gen
 cd packages/physicalai-mujoco-so101-plugin
 uv run python scripts/run_conveyor_demo.py --speed 0.03 --episodes 3             # score
 uv run python scripts/run_conveyor_demo.py --sweep 0.01 0.03 0.05 0.07 --seeds 3  # success vs belt speed
-uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4     # overview + orbit video
+uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4     # overview, wrist, orbit video
 ```
 
 Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sorted correctly at 1–5 cm/s, 81% at 7 cm/s and 48% at 10 cm/s. Above about 5 cm/s, items arrive faster than one pick-and-place cycle (about 2.3 s).

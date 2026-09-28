@@ -7,7 +7,7 @@ Examples (from the package directory):
 
     uv run python scripts/run_conveyor_demo.py --speed 0.03 --episodes 2
     uv run python scripts/run_conveyor_demo.py --sweep 0.01 0.02 0.03 0.05 0.07 0.10 --seeds 3
-    uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/conveyor_demo.mp4
+    uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/conveyor_demo.mp4  # overview, wrist, orbit
 """  # noqa: INP001
 
 from __future__ import annotations
@@ -68,10 +68,10 @@ def run(speed: float, seed: int, episodes: int, video: Path | None = None, fps: 
         import cv2  # noqa: PLC0415
 
         renderer = mujoco.Renderer(model, 480, 640)
-        writer = cv2.VideoWriter(str(video), cv2.VideoWriter.fourcc(*"mp4v"), fps_real, (1280, 480))
+        writer = cv2.VideoWriter(str(video), cv2.VideoWriter.fourcc(*"mp4v"), fps_real, (1920, 480))
         orbit = mujoco.MjvCamera()
-        orbit.lookat[:] = (0.15, 0.0, 0.05)
-        orbit.distance, orbit.elevation = 0.8, -28.0
+        orbit.lookat[:] = (0.17, 0.08, 0.06)
+        orbit.distance, orbit.elevation = 0.85, -26.0
 
     result = RunResult(stats=demo.stats)
     tick = 0
@@ -90,10 +90,12 @@ def run(speed: float, seed: int, episodes: int, video: Path | None = None, fps: 
 
             renderer.update_scene(data, camera="overview")
             left = renderer.render()
-            orbit.azimuth = 200.0 + 25.0 * np.sin(data.time / 8.0)
+            renderer.update_scene(data, camera="wrist")
+            middle = renderer.render()
+            orbit.azimuth = 205.0 + 20.0 * np.sin(data.time / 8.0)
             renderer.update_scene(data, camera=orbit)
             right = renderer.render()
-            frame = np.hstack([left, right])
+            frame = np.hstack([left, middle, right])
             cv2.putText(
                 frame,
                 f"belt {100 * speed:.0f} cm/s  episode {result.episodes + 1}  {status['score']}",
@@ -118,7 +120,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="first random seed (default 0)")
     parser.add_argument("--seeds", type=int, default=1, help="runs per speed, with consecutive seeds (default 1)")
     parser.add_argument("--sweep", type=float, nargs="+", help="belt speeds (m/s) to sweep instead of --speed")
-    parser.add_argument("--video", type=Path, help="write an MP4 (overview camera + orbit view) of the first run")
+    parser.add_argument("--video", type=Path, help="write an MP4 (overview, wrist and orbit views) of the first run")
     args = parser.parse_args()
     logger.remove()
 
