@@ -71,6 +71,7 @@ def test_grasp_yaw_closes_along_the_belt_and_matches_the_faces(sim: tuple) -> No
     assert demo._grasp_yaw(data, cylinder, np.pi) == pytest.approx(1.5 * np.pi)
 
 
+@pytest.mark.slow
 def test_demonstrator_sorts_a_short_episode(sim: tuple) -> None:
     model, data, conveyor = sim
     logger.disable("physicalai_mujoco_so101_plugin")
