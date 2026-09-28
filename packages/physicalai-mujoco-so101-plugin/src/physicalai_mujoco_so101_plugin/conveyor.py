@@ -45,8 +45,11 @@ REJECT_BIN = "reject"
 
 LIGHTS = ("green", "amber", "red")
 """Stack-light lamps; each lit lamp is a mocap body ``light_<name>_on`` in the scene."""
-LIGHT_HIDDEN_Z = -1.0
-"""Where an unlit lamp waits: under the floor, out of every view."""
+LIGHT_HIDDEN_POS = (0.344, -0.405, 0.05)
+"""Where an unlit lamp waits: inside the belt's drive motor can (a closed 4 cm x 5 cm cylinder).
+
+Not under the floor: the browser viewer draws the floor as a see-through grid.
+"""
 
 DEFAULT_BELT_SPEED = 0.03
 MAX_BELT_SPEED = 0.10
@@ -459,8 +462,7 @@ class ConveyorSort:
             if light not in self._lights:
                 continue
             mocap, on_pos = self._lights[light]
-            pos = on_pos if lit else np.array([on_pos[0], on_pos[1], LIGHT_HIDDEN_Z])
-            data.mocap_pos[mocap] = pos
+            data.mocap_pos[mocap] = on_pos if lit else LIGHT_HIDDEN_POS
 
     def _bodies_touching_robot(self, data: object) -> set[int]:
         """Bodies in contact with any part of the arm (in practice: items in the gripper).

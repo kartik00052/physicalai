@@ -175,6 +175,28 @@ def test_stack_light_shows_running_item_soon_and_paused(sim: tuple) -> None:
     assert lit("red") and not lit("green") and not lit("amber")
 
 
+def test_unlit_lamps_hide_inside_the_motor_can(sim: tuple) -> None:
+    # The browser viewer draws the floor as a see-through grid, so a lamp parked under it shows.
+    model, data, conveyor = sim
+    conveyor.set_active(False)  # red on, green and amber off
+    run(model, data, conveyor, 0.02)
+    obj = Path(get_scene("conveyor_sort").scene_xml_path).parent / "assets" / "conveyor_motor.obj"
+    verts = np.array([[float(v) for v in line.split()[1:4]] for line in obj.read_text().splitlines() if line.startswith("v ")])
+    can = verts[verts[:, 0] > verts[:, 0].max() - 0.05 + 1e-6]  # the can, not the gearbox beside it
+    centre = (can.min(axis=0) + can.max(axis=0)) / 2
+    radius = (can.max(axis=0)[2] - can.min(axis=0)[2]) / 2
+    for light in ("green", "amber"):
+        mocap, _ = conveyor._lights[light]
+        body = int(np.flatnonzero(model.body_mocapid == mocap)[0])
+        geom = int(model.body_geomadr[body])
+        lamp_r, lamp_half = model.geom_size[geom][:2]
+        pos = data.mocap_pos[mocap]
+        assert pos[2] - lamp_half > 0.0, "above the floor"
+        assert can.min(axis=0)[0] < pos[0] - lamp_r and pos[0] + lamp_r < can.max(axis=0)[0]
+        # The lamp's cross-section corner must stay inside the can's circular section.
+        assert np.hypot(abs(pos[1] - centre[1]) + lamp_r, abs(pos[2] - centre[2]) + lamp_half) < radius
+
+
 def test_held_item_is_not_scored_as_a_miss(sim: tuple) -> None:
     model, data, conveyor = sim
     conveyor.set_active(False)
