@@ -320,8 +320,16 @@ class ConveyorDemonstrator:
         self._move_toward(goal, dt, speed)
         return abs(self._plan.setpoint[2] - z) < 0.003  # noqa: PLR2004
 
-    def step(self, data: object, dt: float) -> None:  # noqa: C901, PLR0912, PLR0915
-        """Advance the cycle by one control tick of `dt` seconds and write the arm targets."""
+    def step(self, data: object, dt: float, *, apply: bool = True) -> np.ndarray:  # noqa: C901, PLR0912, PLR0915
+        """Advance the cycle by one control tick of `dt` seconds.
+
+        With `apply`, the targets are written to the arm's actuators. Without it
+        they are only returned, for a caller that routes them elsewhere (a
+        virtual leader arm, say).
+
+        Returns:
+            Joint targets in radians, ordered like ``SO101_JOINT_ORDER`` (arm joints, then gripper).
+        """
         cfg, plan = self.config, self._plan
         now = float(data.time)
         if self._q is None:
@@ -398,5 +406,8 @@ class ConveyorDemonstrator:
                 plan.phase, plan.item = "idle", None
 
         self._q, _ = self.ik.solve(self._q, plan.setpoint, plan.yaw)
-        for actuator, value in zip(self._actuators, (*self._q, self._grip), strict=True):
-            data.ctrl[actuator] = value
+        targets = np.array([*self._q, self._grip], dtype=np.float64)
+        if apply:
+            for actuator, value in zip(self._actuators, targets, strict=True):
+                data.ctrl[actuator] = value
+        return targets

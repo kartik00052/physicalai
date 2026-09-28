@@ -13,6 +13,7 @@ Examples (from the package directory):
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import mujoco
 import numpy as np
 from loguru import logger
 
+from physicalai_mujoco_so101_plugin.constants import SO101_JOINT_ORDER
 from physicalai_mujoco_so101_plugin.conveyor import ConveyorSort
 from physicalai_mujoco_so101_plugin.conveyor_demo import ConveyorDemonstrator, DemoStats
 from physicalai_mujoco_so101_plugin.scene_registry import get_reset_fn, get_scene
@@ -41,8 +43,20 @@ class RunResult:
         return sum(self.score.values())
 
 
-def run(speed: float, seed: int, episodes: int, video: Path | None = None, fps: int = 30) -> RunResult:
+def run(  # noqa: PLR0913, PLR0917 - a script entry point with plain knobs
+    speed: float,
+    seed: int,
+    episodes: int,
+    video: Path | None = None,
+    fps: int = 30,
+    action_hz: float | None = None,
+    latency_s: float = 0.0,
+) -> RunResult:
     """Run `episodes` demonstrator episodes at belt `speed` (m/s).
+
+    `action_hz` and `latency_s` imitate a leader-arm loop such as Studio's
+    teleoperation: targets are sampled at `action_hz` and reach the arm
+    `latency_s` later. Without them the demonstrator drives the arm every tick.
 
     Returns:
         The summed scores and demonstrator counters.
@@ -75,8 +89,18 @@ def run(speed: float, seed: int, episodes: int, video: Path | None = None, fps: 
 
     result = RunResult(stats=demo.stats)
     tick = 0
+    relayed = action_hz is not None or latency_s > 0.0
+    in_flight: deque[tuple[float, np.ndarray]] = deque()
+    next_sample = 0.0
+    actuators = [int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)) for name in SO101_JOINT_ORDER]
     while result.episodes < episodes and data.time < time_limit:
-        demo.step(data, dt)
+        targets = demo.step(data, dt, apply=not relayed)
+        if relayed:
+            if data.time >= next_sample:
+                in_flight.append((data.time + latency_s, targets))
+                next_sample += 1.0 / action_hz if action_hz else dt
+            while in_flight and in_flight[0][0] <= data.time:
+                data.ctrl[actuators] = in_flight.popleft()[1]
         for _ in range(SUBSTEPS):
             mujoco.mj_step(model, data)
         conveyor.update(model, data)
@@ -120,6 +144,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="first random seed (default 0)")
     parser.add_argument("--seeds", type=int, default=1, help="runs per speed, with consecutive seeds (default 1)")
     parser.add_argument("--sweep", type=float, nargs="+", help="belt speeds (m/s) to sweep instead of --speed")
+    parser.add_argument("--action-hz", type=float, help="sample targets at this rate, like a leader-arm loop")
+    parser.add_argument("--latency-ms", type=float, default=0.0, help="delay before sampled targets reach the arm")
     parser.add_argument("--video", type=Path, help="write an MP4 (overview, wrist and orbit views) of the first run")
     args = parser.parse_args()
     logger.remove()
@@ -131,7 +157,14 @@ def main() -> None:
         total = RunResult()
         for seed in range(args.seed, args.seed + args.seeds):
             video = args.video if (args.video is not None and speed == speeds[0] and seed == args.seed) else None
-            res = run(speed, seed, args.episodes, video=video)
+            res = run(
+                speed,
+                seed,
+                args.episodes,
+                video=video,
+                action_hz=args.action_hz,
+                latency_s=args.latency_ms / 1000.0,
+            )
             total.episodes += res.episodes
             for key in total.score:
                 total.score[key] += res.score[key]
