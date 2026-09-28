@@ -334,6 +334,7 @@ def test_link_reports_a_failed_discovery() -> None:
     assert link.error == "Studio is not reachable"
 
 
+@pytest.mark.slow
 def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio) -> None:
     scene = get_scene("conveyor_sort")
     robot = MuJoCoSO101(
@@ -343,15 +344,14 @@ def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio)
         owner_name="mujoco-so101-follow",
     )
     robot.connect()
-    robot._open_studio_link = lambda: _link(studio)
-    robot._recorder = AutoRecorder(robot._open_studio_link)
+    robot._automation.recorder = AutoRecorder(lambda: _link(studio))
     try:
         robot._set_belt_speed(0.05)
-        robot._set_autopilot("drive")
+        robot._automation.set_autopilot("drive")
         robot._commands.put(SetStudioRecordingCommand(options=RecordingOptions(task="Sort the belt", keep="all")))
         deadline = time.monotonic() + 60.0
         while not any(m["event"] == "save_episode" for m in studio.received):
-            assert time.monotonic() < deadline, robot._recorder.status()
+            assert time.monotonic() < deadline, robot._automation.recorder.status()
             robot.get_observation()
         episode = robot._http_status()["episode"]
         assert episode["episode_count"] == 1
@@ -366,7 +366,7 @@ def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio)
         _wait(next_started)
         assert [m["event"] for m in studio.received] == ["start_recording", "save_episode", "start_recording"]
         assert studio.received[0]["data"] == {"task": "Sort the belt"}
-        assert robot._recorder.status()["saved"] == 1
+        assert robot._automation.recorder.status()["saved"] == 1
         # A fresh episode: the fake Studio confirms at once, so at most its first item is out.
         assert robot._http_status()["episode"]["spawned"] <= 1
     finally:

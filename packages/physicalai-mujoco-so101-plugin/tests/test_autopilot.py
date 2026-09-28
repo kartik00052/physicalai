@@ -38,6 +38,7 @@ def test_autopilot_is_only_available_with_a_conveyor() -> None:
         autopilot.set_mode("fly")  # type: ignore[arg-type]
 
 
+@pytest.mark.slow
 def test_drive_mode_sorts_items_and_ignores_client_actions(robot: MuJoCoSO101) -> None:
     robot._commands.put(SetAutopilotCommand(mode="drive"))
     robot._drain_commands()
@@ -50,13 +51,14 @@ def test_drive_mode_sorts_items_and_ignores_client_actions(robot: MuJoCoSO101) -
     assert score(robot)["wrong"] == 0
 
 
+@pytest.mark.slow
 def test_leader_mode_publishes_targets_that_sort_when_sent_back(robot: MuJoCoSO101) -> None:
-    robot._set_autopilot("leader")
+    robot._automation.set_autopilot("leader")
     start = np.array(robot._data.ctrl[list(robot._ctrl_indices)])
     for _ in range(20):
         robot.get_observation()
     np.testing.assert_allclose(robot._data.ctrl[list(robot._ctrl_indices)], start)  # the autopilot moved nothing
-    first = robot._leader_snapshot()
+    first = robot._automation.leader_snapshot()
     assert first["mode"] == "leader"
     assert first["unit"] == "normalized"
     assert first["joint_names"] == list(robot.JOINT_ORDER)
@@ -64,20 +66,20 @@ def test_leader_mode_publishes_targets_that_sort_when_sent_back(robot: MuJoCoSO1
     # Close the loop the way Studio's teleoperation does: read the leader, send it as the action.
     for _ in range(round(25.0 / TICK_S)):
         robot.get_observation()
-        robot.send_action(np.asarray(robot._leader_snapshot()["joint_positions"], dtype=np.float32))
-    assert robot._leader_snapshot()["seq"] > first["seq"]
+        robot.send_action(np.asarray(robot._automation.leader_snapshot()["joint_positions"], dtype=np.float32))
+    assert robot._automation.leader_snapshot()["seq"] > first["seq"]
     assert score(robot)["correct"] >= 1
     assert score(robot)["wrong"] == 0
 
 
 def test_leader_echoes_the_arm_targets_when_the_autopilot_is_off(robot: MuJoCoSO101) -> None:
     robot.get_observation()
-    leader = np.asarray(robot._leader_snapshot()["joint_positions"], dtype=np.float32)
+    leader = np.asarray(robot._automation.leader_snapshot()["joint_positions"], dtype=np.float32)
     robot.send_action(leader)
     before = np.array(robot._data.ctrl[list(robot._ctrl_indices)])
     for _ in range(10):
         robot.get_observation()
-        robot.send_action(np.asarray(robot._leader_snapshot()["joint_positions"], dtype=np.float32))
+        robot.send_action(np.asarray(robot._automation.leader_snapshot()["joint_positions"], dtype=np.float32))
     np.testing.assert_allclose(robot._data.ctrl[list(robot._ctrl_indices)], before, atol=1e-5)
 
 
@@ -98,11 +100,11 @@ def test_feed_hold_stops_the_belt_without_touching_the_user_pause(robot: MuJoCoS
 
 
 def test_switching_to_a_scene_without_a_belt_turns_the_autopilot_off(robot: MuJoCoSO101) -> None:
-    robot._set_autopilot("drive")
+    robot._automation.set_autopilot("drive")
     assert robot._switch_to_scene("single_pick_place")
     assert robot._http_status()["autopilot"] == {"available": False, "mode": "off", "phase": None, "target": None}
-    robot._set_autopilot("drive")  # ignored: nothing to drive
-    assert robot._autopilot.mode == "off"
+    robot._automation.set_autopilot("drive")  # ignored: nothing to drive
+    assert robot._automation.autopilot.mode == "off"
 
 
 def test_autopilot_markdown() -> None:
