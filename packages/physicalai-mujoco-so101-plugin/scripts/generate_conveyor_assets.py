@@ -204,7 +204,11 @@ def label_mesh() -> _Mesh:
     """
     hx, hy, hz = LABEL_HALF
     mesh = box_mesh(LABEL_HALF)
-    mesh.uvs = [(0.5, 0.03)] * len(mesh.uvs)
+    # Drop the box's own top face (the first quad): a second face in the same plane z-fights with
+    # the text face, which flickers in close-up views such as the wrist camera.
+    mesh.verts, mesh.uvs, mesh.faces = mesh.verts[4:], [(0.5, 0.03)] * (len(mesh.verts) - 4), [
+        (a - 4, b - 4, c - 4) for a, b, c in mesh.faces[2:]
+    ]
     top = [np.array(c) for c in ((-hx, hy, hz), (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz))]
     mesh.quad(top, [(0, 0), (1, 0), (1, 1), (0, 1)])
     return mesh

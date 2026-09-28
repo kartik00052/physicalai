@@ -62,7 +62,8 @@
 
     <texture name="cell_floor" type="2d" builtin="checker" mark="edge" rgb1="0.36 0.37 0.39" rgb2="0.32 0.33 0.35"
              markrgb="0.45 0.46 0.48" width="300" height="300"/>
-    <material name="cell_floor" texture="cell_floor" texuniform="true" texrepeat="4 4" reflectance="0.1"/>
+    <!-- No reflectance: a reflective floor makes MuJoCo draw the whole scene again every frame (~2.8 ms). -->
+    <material name="cell_floor" texture="cell_floor" texuniform="true" texrepeat="4 4"/>
 
     <texture name="belt" type="2d" file="belt.png"/>
     <!-- belt_surface.obj repeats the texture every 20 mm (= BELT_TILE in conveyor.py). -->
