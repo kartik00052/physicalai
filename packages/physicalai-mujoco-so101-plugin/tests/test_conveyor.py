@@ -144,6 +144,37 @@ def test_paused_belt_stops_and_feeds_nothing(sim: tuple) -> None:
     assert data.ctrl[conveyor._belt_actuator] == 0.0
 
 
+def test_stack_light_shows_running_item_soon_and_paused(sim: tuple) -> None:
+    model, data, conveyor = sim
+
+    def lit(light: str) -> bool:
+        mocap, on_pos = conveyor._lights[light]
+        return bool(np.allclose(data.mocap_pos[mocap], on_pos))
+
+    assert set(conveyor._lights) == {"green", "amber", "red"}
+    warn = conveyor._config.warn_s
+
+    def run_until(soon: bool) -> None:
+        for _ in range(500):
+            run(model, data, conveyor, 0.02)
+            if (conveyor.status()["next_item_s"] <= warn) == soon:
+                return
+        pytest.fail("light state never reached")
+
+    # The first item spawns at once, so amber starts lit; wait for a gap, then the next item.
+    run_until(soon=False)
+    assert conveyor.status()["lights"] == {"green": True, "amber": False, "red": False}
+    assert lit("green") and not lit("amber") and not lit("red")
+    run_until(soon=True)
+    assert conveyor.status()["lights"] == {"green": True, "amber": True, "red": False}
+    assert lit("green") and lit("amber") and not lit("red")
+    conveyor.set_active(False)
+    conveyor.update(model, data)
+    assert conveyor.status()["lights"] == {"green": False, "amber": False, "red": True}
+    assert conveyor.status()["next_item_s"] is None
+    assert lit("red") and not lit("green") and not lit("amber")
+
+
 def test_held_item_is_not_scored_as_a_miss(sim: tuple) -> None:
     model, data, conveyor = sim
     conveyor.set_active(False)

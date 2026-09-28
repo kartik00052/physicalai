@@ -87,6 +87,13 @@ Decisions made while building, including changes from the plan above:
 - **Textures are UV-mapped meshes.** mjviser 0.0.14 draws primitives in a flat color and reduces cube maps to one color per face, so the belt, the cracked items and the reject bin first rendered white in the browser viewer, even though the camera streams were fine. Cracked items now carry a UV-mapped visual mesh over an invisible collision primitive, so their physics is unchanged. The belt has a UV-mapped visual mesh on the moving slab, and the bin mesh has box-projected UVs. `test_conveyor.py` checks that no textured primitive or cube map comes back.
 - **Home pose:** shoulder_lift −1.4, elbow_flex 0.7, wrist_flex 1.6. The gripper hovers about 8 cm above the near rail. Reset also applies it.
 
+### Teleoperation aids (2026-09-28)
+
+- **Item timing:** items are 15 ± 3 cm apart along the belt: 5 s at 3 cm/s, 7.5 s at 2 cm/s. Teleoperating works but isn't easy at 3 cm/s.
+- **Stack light on the hood:** green = belt running, amber = the next item leaves the hood within 2 s, red = paused. The lit lamps are mocap bodies moved over dim lenses, because the browser viewer syncs poses but not colors. The overview camera sees the light too, and training and evaluation both have it.
+- **Wrist camera:** kept on the side mount, as on the physical SO-101. At neutral wrist roll the belt appears vertical, and the view is level with the wrist rolled about 90°, which is how the demonstrator grasps. A mount behind the fixed jaw would give a level view at neutral roll, but the jaw then hides the item being grasped.
+- **Rendering:** the floor reflection is off (it cost ~2.8 ms of ~10.9 ms per frame). MuJoCo's classic renderer runs on macOS through OpenGL 2.1 translated to Metal. It is limited by geometry passes, not pixels or GPU power. MuJoCo 3.14's experimental Filament renderer (Metal-native) is worth trying.
+
 ### Scripted demonstrator
 
 `conveyor_demo.ConveyorDemonstrator` uses privileged state and writes the arm's joint targets directly. `scripts/run_conveyor_demo.py` scores it, sweeps belt speeds, or records a video. The data path (a virtual leader in Studio, or a headless dataset writer) is still to be decided.

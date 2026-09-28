@@ -43,6 +43,11 @@ ITEM_COLORS = ("red", "blue", "green", "purple")
 BIN_COLORS = ("red", "blue", "green")
 REJECT_BIN = "reject"
 
+LIGHTS = ("green", "amber", "red")
+"""Stack-light lamps; each lit lamp is a mocap body ``light_<name>_on`` in the scene."""
+LIGHT_HIDDEN_Z = -1.0
+"""Where an unlit lamp waits: under the floor, out of every view."""
+
 DEFAULT_BELT_SPEED = 0.03
 MAX_BELT_SPEED = 0.10
 
@@ -63,6 +68,10 @@ class ConveyorConfig:
     belt_x: float = 0.25
     belt_top: float = 0.06
     spawn_y: float = 0.37
+    hood_exit_y: float = 0.30
+    """Items become visible when they ride past this y (the entry hood's mouth)."""
+    warn_s: float = 2.0
+    """The amber light comes on this long before the next item leaves the hood."""
     lateral_jitter: float = 0.012
     belt_end_y: float = -0.40
     belt_half_width: float = 0.05
@@ -156,6 +165,13 @@ class ConveyorSort:
         self._episode = _Episode()
         self._episode_count = 0
         self._last_episode: dict[str, int] | None = None
+        self._next_item_s: float | None = None
+        # Lit lamp mocap ids and their "on" positions (the model default), for the stack light.
+        self._lights: dict[str, tuple[int, np.ndarray]] = {}
+        for light in LIGHTS:
+            body = _body_id(model, f"light_{light}_on")
+            if body >= 0 and int(model.body_mocapid[body]) >= 0:
+                self._lights[light] = (int(model.body_mocapid[body]), np.array(model.body_pos[body], dtype=np.float64))
 
     # ------------------------------------------------------------------
     # Construction
@@ -284,6 +300,8 @@ class ConveyorSort:
             "on_belt": len(self._on_belt),
             "score": self._episode.score.as_dict(),
             "last_episode": self._last_episode,
+            "next_item_s": self._next_item_s,
+            "lights": self._light_states(),
             "rule": "cracked or purple -> reject; red/blue/green -> matching bin",
         }
 
@@ -300,6 +318,8 @@ class ConveyorSort:
             self._maybe_spawn(model, data)
         self._score_items(data)
         self._maybe_finish_episode()
+        self._next_item_s = self._time_to_next_item(data)
+        self._update_lights(data)
 
     def reset_items(self, model: object, data: object) -> None:
         """Park every pool item, rewind the belt and start a fresh episode."""
@@ -394,6 +414,38 @@ class ConveyorSort:
             self._rest_since.pop(name, None)
             self._off_since.pop(name, None)
 
+    def _time_to_next_item(self, data: object) -> float | None:
+        """Seconds until the next item rides out of the entry hood, or ``None`` if none is coming.
+
+        Returns:
+            The time in seconds, or ``None`` when the belt is stopped or the episode has no more items.
+        """
+        cfg = self._config
+        speed = cfg.belt_speed if self._active else 0.0
+        if speed <= 0.0:
+            return None
+        distances = [
+            float(data.xpos[item.body_id][1]) - cfg.hood_exit_y
+            for item in self._on_belt.values()
+            if float(data.xpos[item.body_id][1]) > cfg.hood_exit_y
+        ]
+        if self._episode.spawned < cfg.items_per_episode:
+            distances.append(max(0.0, self._episode.next_spawn_at - self._travel) + cfg.spawn_y - cfg.hood_exit_y)
+        return min(distances) / speed if distances else None
+
+    def _light_states(self) -> dict[str, bool]:
+        running = self._active and self._config.belt_speed > 0.0
+        soon = self._next_item_s is not None and self._next_item_s <= self._config.warn_s
+        return {"green": running, "amber": running and soon, "red": not running}
+
+    def _update_lights(self, data: object) -> None:
+        for light, lit in self._light_states().items():
+            if light not in self._lights:
+                continue
+            mocap, on_pos = self._lights[light]
+            pos = on_pos if lit else np.array([on_pos[0], on_pos[1], LIGHT_HIDDEN_Z])
+            data.mocap_pos[mocap] = pos
+
     def _bodies_touching_robot(self, data: object) -> set[int]:
         """Bodies in contact with any part of the arm (in practice: items in the gripper).
 
@@ -453,6 +505,12 @@ def park_items(model: object, data: object) -> None:
         data.qpos[int(model.jnt_qposadr[belt_joint])] = 0.0
         data.qvel[int(model.jnt_dofadr[belt_joint])] = 0.0
     mujoco.mj_forward(model, data)
+
+
+def _body_id(model: object, name: str) -> int:
+    import mujoco  # noqa: PLC0415
+
+    return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
 
 
 def _robot_root(model: object) -> int:

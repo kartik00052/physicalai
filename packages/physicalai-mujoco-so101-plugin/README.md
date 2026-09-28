@@ -362,6 +362,7 @@ uv run --no-sync physicalai-mujoco-so101 start --scene yahtzee
 - **Bins**: red, blue and green bins plus a striped reject bin, each labelled on its floor (RED, BLUE, GREEN, REJECT) so the labels read upright in the overview camera.
 - **Rule**: cracked items and purple items (which have no bin of their own) go to the striped reject bin; the others go to the bin of their color. An item that rides off the end of the belt, or comes to rest anywhere else, is a miss.
 - **Episodes**: an episode feeds 10 items, 15 cm apart along the belt (so the spacing does not depend on the belt speed). Once every item is scored, the next episode starts. **Reset Scene** starts a fresh episode.
+- **Stack light**: a three-lamp light on the entry hood shows green while the belt runs, amber about 2 s before the next item leaves the hood, and red while the belt is paused. `/health` reports the same lamps and the seconds until the next item (`episode.lights`, `episode.next_item_s`).
 - **Belt speed**: 3 cm/s by default, adjustable from 0 to 10 cm/s in the viewer or with `POST /conveyor/belt-speed`. **Home Arm** holds the gripper above the pick zone.
 
 At 224 px the overview camera shows item colors clearly, but not cracks: an item covers about 5 px. The wrist camera and the full-resolution overview show them.

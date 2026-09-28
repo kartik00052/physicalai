@@ -80,6 +80,14 @@
     <texture name="reject_stripes" type="2d" file="reject_stripes.png"/>
     <material name="bin_reject" texture="reject_stripes" rgba="1 1 1 1"/>
     <material name="catch_tray" rgba="0.25 0.26 0.28 1"/>
+    <!-- Stack light: dim lenses always shown; the lit lamps are mocap bodies moved over them
+         (the browser viewer only updates poses at run time, not colors). -->
+    <material name="light_green_off" rgba="0.10 0.24 0.12 1"/>
+    <material name="light_amber_off" rgba="0.30 0.21 0.04 1"/>
+    <material name="light_red_off" rgba="0.28 0.06 0.05 1"/>
+    <material name="light_green_on" rgba="0.20 1.00 0.30 1" emission="1"/>
+    <material name="light_amber_on" rgba="1.00 0.68 0.08 1" emission="1"/>
+    <material name="light_red_on" rgba="1.00 0.15 0.10 1" emission="1"/>
     <texture name="label_red" type="2d" file="label_red.png"/>
     <texture name="label_blue" type="2d" file="label_blue.png"/>
     <texture name="label_green" type="2d" file="label_green.png"/>
@@ -124,6 +132,23 @@
     <geom name="hood_wall_left" class="conveyor_collision" type="box" pos="0.306 0.3625 0.0875" size="0.002 0.0625 0.0525"/>
     <geom name="hood_wall_right" class="conveyor_collision" type="box" pos="0.194 0.3625 0.0875" size="0.002 0.0625 0.0525"/>
     <geom name="hood_roof" class="conveyor_collision" type="box" pos="0.25 0.3625 0.142" size="0.061 0.0625 0.002"/>
+
+    <!-- Stack light on the back corner of the entry hood (out of the arm's reach): green = belt
+         running, amber = an item comes out of the hood within ~2 s, red = belt paused. -->
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.154" size="0.004 0.010" material="dark"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1715" size="0.009 0.0065" material="light_green_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1855" size="0.009 0.0065" material="light_amber_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1995" size="0.009 0.0065" material="light_red_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.2075" size="0.0095 0.0015" material="dark"/>
+    <body name="light_green_on" mocap="true" pos="0.295 0.405 0.1715">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_green_on"/>
+    </body>
+    <body name="light_amber_on" mocap="true" pos="0.295 0.405 0.1855">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_amber_on"/>
+    </body>
+    <body name="light_red_on" mocap="true" pos="0.295 0.405 0.1995">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_red_on"/>
+    </body>
 
     <!-- Moving belt: slides along y. Covers y in [q - 0.40, q + 0.42] for joint q in (-0.02, 0]. -->
     <body name="conveyor_belt" pos="0.25 0.01 0.055">
