@@ -151,6 +151,7 @@ class ConveyorSort:
         self._config = config
         self._rng = rng
         self._active = True
+        self._feed_held = False
         self._travel = 0.0
         self._last_belt_q: float | None = None
         self._on_belt: dict[str, ConveyorItem] = {}
@@ -238,6 +239,20 @@ class ConveyorSort:
         self._active = active
 
     @property
+    def feed_held(self) -> bool:
+        """Whether an automation holds the belt, apart from the user's pause (see `set_feed_hold`)."""
+        return self._feed_held
+
+    def set_feed_hold(self, held: bool) -> None:  # noqa: FBT001
+        """Hold the belt and feed between recorded episodes without touching the user's pause."""
+        self._feed_held = held
+
+    @property
+    def running(self) -> bool:
+        """Whether the belt moves and feeds items: not paused by the user and not held."""
+        return self._active and not self._feed_held
+
+    @property
     def dwell_s(self) -> float:
         """Seconds an item must rest before it is scored."""
         return self._config.settle_s
@@ -292,7 +307,8 @@ class ConveyorSort:
             "enabled": True,
             "kind": "conveyor",
             "active": self._active,
-            "phase": "running" if self._active else "paused",
+            "feed_held": self._feed_held,
+            "phase": "held" if self._active and self._feed_held else ("running" if self._active else "paused"),
             "episode_count": self._episode_count,
             "belt_speed": self._config.belt_speed,
             "items_per_episode": self._config.items_per_episode,
@@ -311,10 +327,10 @@ class ConveyorSort:
 
     def update(self, model: object, data: object) -> None:
         """Advance belt, spawner, scoring and episode bookkeeping for one tick."""
-        speed = self._config.belt_speed if self._active else 0.0
+        speed = self._config.belt_speed if self.running else 0.0
         data.ctrl[self._belt_actuator] = -speed
         self._wrap_belt(data)
-        if self._active:
+        if self.running:
             self._maybe_spawn(model, data)
         self._score_items(data)
         self._maybe_finish_episode()
@@ -421,7 +437,7 @@ class ConveyorSort:
             The time in seconds, or ``None`` when the belt is stopped or the episode has no more items.
         """
         cfg = self._config
-        speed = cfg.belt_speed if self._active else 0.0
+        speed = cfg.belt_speed if self.running else 0.0
         if speed <= 0.0:
             return None
         distances = [
@@ -434,7 +450,7 @@ class ConveyorSort:
         return min(distances) / speed if distances else None
 
     def _light_states(self) -> dict[str, bool]:
-        running = self._active and self._config.belt_speed > 0.0
+        running = self.running and self._config.belt_speed > 0.0
         soon = self._next_item_s is not None and self._next_item_s <= self._config.warn_s
         return {"green": running, "amber": running and soon, "red": not running}
 

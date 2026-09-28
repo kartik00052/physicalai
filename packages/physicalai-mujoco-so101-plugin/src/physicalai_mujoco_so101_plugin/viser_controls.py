@@ -37,18 +37,23 @@ from physicalai_mujoco_so101_plugin.http_server import (
     MIN_DWELL_S,
     HomeCommand,
     ResetCommand,
+    SetAutopilotCommand,
     SetAutoResetCommand,
     SetBeltSpeedCommand,
     SetObjectPoseCommand,
     SetSeedCommand,
+    SetStudioRecordingCommand,
     ShutdownCommand,
     SwitchSceneCommand,
 )
+from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from physicalai_mujoco_so101_plugin.autopilot import AutopilotMode
     from physicalai_mujoco_so101_plugin.http_server import FrameBuffer, SimCommand
+    from physicalai_mujoco_so101_plugin.studio_recorder import KeepPolicy
 
 CUSTOM_MODEL_LABEL = "Custom model"
 """Scene dropdown entry shown when the loaded model is not a registered scene."""
@@ -300,6 +305,10 @@ class PanelState:
     """Model size, used for the default camera distance."""
     timing: Mapping[str, Any] = field(default_factory=dict)
     """Real-time factor, control rate and camera frame rates (see ``MuJoCoSO101._timing_status``)."""
+    autopilot: Mapping[str, Any] = field(default_factory=dict)
+    """Autopilot availability, mode and phase (see ``Autopilot.status``)."""
+    studio: Mapping[str, Any] = field(default_factory=dict)
+    """Automatic Studio recording status (see ``AutoRecorder.status``)."""
 
 
 @dataclass
@@ -315,6 +324,9 @@ class _Handles:
     belt_speed: Any = None
     episode_status: Any = None
     performance: Any = None
+    autopilot_mode: Any = None
+    studio_toggle: Any = None
+    studio_status: Any = None
     drag_toggle: Any = None
     gizmos: dict[str, Any] = field(default_factory=dict)
     preview_toggle: Any = None
@@ -381,6 +393,8 @@ def _score_text(score: Mapping[str, Any]) -> str:
 
 def _conveyor_markdown(episode: Mapping[str, Any]) -> str:
     state = "running" if episode.get("active", True) else "paused"
+    if episode.get("phase") == "held":
+        state = "held between recorded episodes"
     speed_cm = 100.0 * float(episode.get("belt_speed", 0.0))
     lines = [
         f"**Belt:** {state}, {speed_cm:.1f} cm/s",
@@ -393,6 +407,39 @@ def _conveyor_markdown(episode: Mapping[str, Any]) -> str:
     if last:
         lines.append(f"**Last episode:** {_score_text(last)}")
     lines.append(f"**Rule:** {episode.get('rule', '')}")
+    return "  \n".join(lines)
+
+
+AUTOPILOT_LABELS: dict[AutopilotMode, str] = {
+    "off": "Off",
+    "drive": "Drive the arm",
+    "leader": "Virtual leader (Studio teleop)",
+}
+_AUTOPILOT_BY_LABEL: dict[str, AutopilotMode] = {label: mode for mode, label in AUTOPILOT_LABELS.items()}
+KEEP_LABELS: dict[KeepPolicy, str] = {"perfect": "Perfect episodes only", "all": "All episodes"}
+_KEEP_BY_LABEL: dict[str, KeepPolicy] = {label: keep for keep, label in KEEP_LABELS.items()}
+
+
+def _autopilot_markdown(autopilot: Mapping[str, Any]) -> str:
+    if autopilot.get("mode", "off") == "off":
+        return "**Autopilot:** off"
+    phase = autopilot.get("phase") or "idle"
+    target = autopilot.get("target")
+    return f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+
+
+def _studio_markdown(studio: Mapping[str, Any]) -> str:
+    phase = str(studio.get("phase", "off"))
+    lines = [f"**Studio:** {phase}"]
+    if studio.get("follower"):
+        leader = studio.get("leader") or "no leader"
+        lines[0] += f" - {studio['follower']} with {leader}"
+    if studio.get("message"):
+        lines.append(str(studio["message"]))
+    if phase != "off" or studio.get("saved") or studio.get("discarded"):
+        budget = int(studio.get("max_episodes") or 0)
+        saved = f"{int(studio.get('saved', 0))}" + (f"/{budget}" if budget else "")
+        lines.append(f"**Episodes:** {saved} saved, {int(studio.get('discarded', 0))} discarded")
     return "  \n".join(lines)
 
 
@@ -644,6 +691,8 @@ class SimControlPanel:
         self._handles.auto_reset = running
         self._handles.belt_speed = speed
         self._handles.episode_status = status
+        if state.autopilot.get("available"):
+            self._build_autopilot_controls(state)
 
         @running.on_update
         def _on_running(event: object) -> None:
@@ -655,6 +704,60 @@ class SimControlPanel:
             if not _is_server_event(event):
                 value = min(max(float(speed.value) / 100.0, 0.0), MAX_BELT_SPEED)
                 self._submit(SetBeltSpeedCommand(speed=value))
+
+    def _build_autopilot_controls(self, state: PanelState) -> None:
+        gui = self._server.gui
+        with gui.add_folder("Autopilot"):
+            mode = gui.add_dropdown(
+                "Autopilot",
+                options=tuple(AUTOPILOT_LABELS.values()),
+                initial_value=AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off"),
+                hint=(
+                    "The scripted demonstrator sorts the belt. 'Drive the arm' moves it directly; "
+                    "'Virtual leader' only publishes targets for Studio's MuJoCo SO-101 Virtual Leader"
+                ),
+            )
+            status = gui.add_markdown(_autopilot_markdown(state.autopilot))
+            studio = state.studio
+            active = studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
+            toggle = gui.add_checkbox(
+                "Record in Studio",
+                initial_value=active,
+                hint="Save each conveyor episode to the dataset open in Studio's recording view",
+            )
+            task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
+            keep = gui.add_dropdown(
+                "Keep",
+                options=tuple(KEEP_LABELS.values()),
+                initial_value=KEEP_LABELS.get(studio.get("keep", "perfect"), KEEP_LABELS["perfect"]),
+            )
+            budget = gui.add_number(
+                "Episodes (0 = no limit)",
+                initial_value=int(studio.get("max_episodes") or 0),
+                min=0,
+                max=MAX_EPISODES,
+                step=1,
+            )
+            studio_status = gui.add_markdown(_studio_markdown(studio))
+        self._handles.autopilot_mode = (mode, status)
+        self._handles.studio_toggle = toggle
+        self._handles.studio_status = studio_status
+
+        @mode.on_update
+        def _on_mode(event: object) -> None:
+            if not _is_server_event(event):
+                self._submit(SetAutopilotCommand(mode=_AUTOPILOT_BY_LABEL[str(mode.value)]))
+
+        @toggle.on_update
+        def _on_toggle(event: object) -> None:
+            if _is_server_event(event):
+                return
+            options = None
+            if toggle.value:
+                text = str(task.value).strip()[:MAX_TASK_CHARS] or DEFAULT_TASK
+                episodes = min(max(int(budget.value), 0), MAX_EPISODES)
+                options = RecordingOptions(task=text, keep=_KEEP_BY_LABEL[str(keep.value)], max_episodes=episodes)
+            self._submit(SetStudioRecordingCommand(options=options))
 
     def _build_episode_controls(self, state: PanelState) -> None:
         if _is_conveyor(state.episode):
@@ -840,6 +943,13 @@ class SimControlPanel:
         handles = self._handles
         if handles.performance is not None:
             handles.performance.content = _performance_markdown(state.timing)
+        if handles.autopilot_mode is not None:
+            mode, status = handles.autopilot_mode
+            mode.value = AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off")
+            status.content = _autopilot_markdown(state.autopilot)
+        if handles.studio_toggle is not None:
+            handles.studio_toggle.value = state.studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
+            handles.studio_status.content = _studio_markdown(state.studio)
         if handles.scene_dropdown is not None:
             label = _scene_label(state)
             if label in handles.scene_dropdown.options:

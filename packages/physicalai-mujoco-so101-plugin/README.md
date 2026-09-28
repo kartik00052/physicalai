@@ -180,6 +180,22 @@ Record from the dataset page as with a real robot (**Add episode**, **Start epis
 
 The same controls are available over HTTP (see [REST control API](#rest-control-api)) if you want to script resets between episodes.
 
+#### Record the conveyor autopilot, with automatic episodes
+
+In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
+
+1. In Studio, add a robot of type **MuJoCo SO-101 Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
+3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
+4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
+5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio also stops the automation.
+
+**Record in Studio** also works with a physical leader arm. You teleoperate, and the simulation saves an episode each time the belt's ten items are scored.
+
+The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
+
+**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record in this mode.
+
 ### 5. Run a trained policy
 
 On the **Models** page, select **Run model** for a policy trained on the simulation dataset. Studio loads the environment the dataset was recorded with, so keep the simulation running with the same owner name and camera ports. Use **Reset Scene** or **Fixed seed** in the viewer between runs.
@@ -219,6 +235,7 @@ Common options:
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
+- `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
 
 ## Joint units
 
@@ -279,23 +296,26 @@ curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type:
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                              |
-| --------------------------- | ------ | ---------------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                             |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, timing, objects, cameras |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                    |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                               |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                          |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                   |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                               |
-| `/reset`                    | POST   | Reset/randomize the current scene                                                        |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                 |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                         |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported            |
-| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt           |
-| `/objects`                  | GET    | Free-object joint names and world poses                                                  |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                  |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                     |
+| Endpoint                    | Method | Description                                                                                    |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                                   |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, timing, objects, cameras       |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                          |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                     |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                         |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                     |
+| `/reset`                    | POST   | Reset/randomize the current scene                                                              |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                       |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                               |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                  |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                 |
+| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                  |
+| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                   |
+| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000}` |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                        |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                        |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                           |
 
 Control requests are queued and applied on the next control cycle. Invalid bodies return `422`. Object coordinates must be finite and within ±2 m.
 

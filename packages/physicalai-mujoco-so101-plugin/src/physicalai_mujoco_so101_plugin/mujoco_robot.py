@@ -21,6 +21,7 @@ import numpy as np
 from loguru import logger
 
 from physicalai.config import export_config
+from physicalai_mujoco_so101_plugin.autopilot import Autopilot
 from physicalai_mujoco_so101_plugin.camera_thread import CameraThread, RateMeter
 from physicalai_mujoco_so101_plugin.constants import (
     BIMANUAL_NUM_JOINTS,
@@ -30,10 +31,18 @@ from physicalai_mujoco_so101_plugin.constants import (
 )
 from physicalai_mujoco_so101_plugin.conveyor import DEFAULT_BELT_SPEED
 from physicalai_mujoco_so101_plugin.spawn import sample_object_positions, write_freejoint_qpos
+from physicalai_mujoco_so101_plugin.studio_recorder import (
+    DEFAULT_STUDIO_URL,
+    AutoRecorder,
+    RecordingOptions,
+    StudioLink,
+    validate_studio_url,
+)
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
+    from physicalai_mujoco_so101_plugin.autopilot import AutopilotMode
     from physicalai_mujoco_so101_plugin.http_server import FrameBuffer, HttpServer, SimCommand
     from physicalai_mujoco_so101_plugin.viser_controls import ObjectPose, PanelState, SimControlPanel
 
@@ -175,8 +184,12 @@ class MuJoCoSO101:
         viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
         unit: JointUnit = "normalized",
+        studio_url: str = DEFAULT_STUDIO_URL,
     ) -> None:
         """Initialize a disconnected simulation robot.
+
+        ``studio_url`` is the Physical AI Studio backend that automatic episode
+        recording attaches to (``http(s)://host:port``).
 
         ``unit`` selects the units of observed joint positions and action
         targets. ``"normalized"`` matches the calibrated SO101 driver: body
@@ -222,7 +235,7 @@ class MuJoCoSO101:
         # Guards state the HTTP thread reads (``_http_status``) while the sim
         # thread rebuilds it during a scene switch or disconnect.
         self._state_lock = threading.RLock()
-        self._init_control_state()
+        self._init_control_state(studio_url)
 
         self._apply_scene_params(scene_config)
 
@@ -237,8 +250,15 @@ class MuJoCoSO101:
             raise ValueError(msg)
         self._unit: JointUnit = unit
 
-    def _init_control_state(self) -> None:
+    def _init_control_state(self, studio_url: str = DEFAULT_STUDIO_URL) -> None:
         """Initialize operator-control state that is not part of the construction recipe."""
+        self._studio_url = validate_studio_url(studio_url)
+        self._autopilot = Autopilot()
+        self._leader_seq = 0
+        self._leader_state: dict[str, object] = {"seq": 0, "joint_names": list(self.JOINT_ORDER)}
+        self._recorder = AutoRecorder(self._open_studio_link)
+        self._recorder_holds_feed = False
+        self._ignored_action_logged = False
         self._seed: int | None = None
         self._auto_reset_active = True
         self._auto_reset_dwell_s = _DEFAULT_SUCCESS_DWELL_S
@@ -344,6 +364,7 @@ class MuJoCoSO101:
         """Release simulation resources."""
         self._stop_http_server()
         self._stop_camera_thread()
+        self._recorder.disable()
         with self._state_lock:
             for renderer in self._camera_renderers.values():
                 with contextlib.suppress(Exception):
@@ -381,6 +402,7 @@ class MuJoCoSO101:
 
         self._drain_commands()
         self._check_scene_xml_camera()
+        self._run_automation()
 
         for _ in range(self._substeps):
             # pyrefly: ignore [missing-attribute]
@@ -428,6 +450,75 @@ class MuJoCoSO101:
             self._tick_meter.reset()  # the clock restarted (new model)
         self._last_tick_sim_time = sim_time
         self._tick_meter.add(sim_time)
+
+    def _run_automation(self) -> None:
+        """Run the Studio episode cycle, step the autopilot and publish the leader pose."""
+        helper = self._episode_auto_reset
+        set_feed_hold = getattr(helper, "set_feed_hold", None)
+        if set_feed_hold is not None:
+            status = helper.status()  # pyrefly: ignore [missing-attribute]
+            directive = self._recorder.update(int(status["episode_count"]), status.get("last_episode"))
+            if directive.hold_feed != self._recorder_holds_feed:  # only on change: leave other holds alone
+                set_feed_hold(directive.hold_feed)
+                self._recorder_holds_feed = directive.hold_feed
+            if directive.clear_belt:
+                helper.reset_items(self._model, self._data)  # pyrefly: ignore [missing-attribute]
+                self._autopilot.reset()
+        # pyrefly: ignore [missing-attribute]
+        dt = self._substeps * float(self._model.opt.timestep)
+        self._publish_leader(self._autopilot.step(self._data, dt))
+
+    def _publish_leader(self, targets: np.ndarray | None) -> None:
+        """Publish the virtual leader pose: the autopilot's targets, else the arm's current targets.
+
+        The arm's actuator targets (not its measured joints) keep a teleoperated
+        follower still: echoing measured joints would let it sag under gravity.
+        """
+        if targets is None:
+            # pyrefly: ignore [missing-attribute]
+            targets = np.asarray(self._data.ctrl[list(self._ctrl_indices)], dtype=np.float64)
+        if self._unit == "normalized":
+            positions = radians_to_normalized(targets, self._require_joint_limits(), self.JOINT_ORDER)
+        else:
+            positions = np.degrees(targets)
+        self._leader_seq += 1
+        state: dict[str, object] = {
+            "seq": self._leader_seq,
+            "mode": self._autopilot.mode,
+            "unit": self._unit,
+            "joint_names": list(self.JOINT_ORDER),
+            "joint_positions": [float(value) for value in positions],
+        }
+        with self._state_lock:
+            self._leader_state = state
+
+    def _leader_snapshot(self) -> dict[str, object]:
+        """Latest virtual leader pose for ``GET /leader``.
+
+        Returns:
+            ``seq``, ``mode``, ``unit``, ``joint_names`` and ``joint_positions``.
+        """
+        with self._state_lock:
+            return dict(self._leader_state)
+
+    def _open_studio_link(self) -> StudioLink:
+        return StudioLink(self._studio_url, self._owner_name)
+
+    def _set_autopilot(self, mode: AutopilotMode) -> None:
+        if not self._autopilot.available:
+            logger.warning("Scene '{}' has no autopilot", self._current_scene_id)
+            return
+        self._autopilot.set_mode(mode)
+        logger.info("Autopilot {}", mode)
+
+    def _set_studio_recording(self, options: RecordingOptions | None) -> None:
+        """Switch automatic Studio recording on with `options`, or off with ``None``."""
+        if options is None:
+            self._recorder.disable("Switched off.")
+        elif getattr(self._episode_auto_reset, "set_feed_hold", None) is None:
+            logger.warning("Automatic Studio recording needs the conveyor scene")
+        else:
+            self._recorder.enable(options)
 
     def _timing_status(self) -> dict[str, object]:
         """Real-time factor, control rate and per-camera frame rates over the last ~2 s.
@@ -558,6 +649,10 @@ class MuJoCoSO101:
         conveyor = ConveyorSort.maybe_create(
             self._model, rng=self._rng, belt_speed=self._belt_speed, active=self._auto_reset_active
         )
+        self._autopilot.bind(self._model, conveyor)
+        self._recorder_holds_feed = False  # a new conveyor starts unheld
+        if conveyor is None and self._recorder.phase != "off":
+            self._recorder.disable("Automatic recording needs the conveyor scene.")
         if conveyor is not None:
             with self._state_lock:
                 self._episode_auto_reset = conveyor
@@ -1090,6 +1185,8 @@ class MuJoCoSO101:
                 view_center=self._view_center(),
                 view_extent=float(self._model.stat.extent) if self._model is not None else 1.0,
                 timing=self._timing_status(),
+                autopilot=self._autopilot.status(),
+                studio=self._recorder.status(),
             )
 
     @staticmethod
@@ -1278,6 +1375,7 @@ class MuJoCoSO101:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
+        self._autopilot.reset()
 
     def _reseed_if_fixed(self) -> None:
         """Restart the shared RNG from the fixed seed so the next reset repeats.
@@ -1519,6 +1617,7 @@ class MuJoCoSO101:
             buffers=self._frame_buffers,
             commands=self._commands,
             get_status=self._http_status,
+            get_leader=self._leader_snapshot,
         )
         server = HttpServer(app, self._http_host, self._http_port)
         try:
@@ -1561,6 +1660,8 @@ class MuJoCoSO101:
                 "seed": self._seed,
                 "episode": self._episode_status(auto_reset),
                 "timing": self._timing_status(),
+                "autopilot": self._autopilot.status(),
+                "studio": self._recorder.status(),
                 "objects": [
                     {"joint": joint, "position": list(pose.position), "wxyz": list(pose.wxyz)}
                     for joint, pose in self._object_poses.items()
@@ -1601,10 +1702,12 @@ class MuJoCoSO101:
         from physicalai_mujoco_so101_plugin.http_server import (  # noqa: PLC0415
             HomeCommand,
             ResetCommand,
+            SetAutopilotCommand,
             SetAutoResetCommand,
             SetBeltSpeedCommand,
             SetObjectPoseCommand,
             SetSeedCommand,
+            SetStudioRecordingCommand,
             ShutdownCommand,
             SwitchSceneCommand,
         )
@@ -1628,6 +1731,10 @@ class MuJoCoSO101:
             self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
         elif isinstance(command, SetBeltSpeedCommand):
             self._set_belt_speed(command.speed)
+        elif isinstance(command, SetAutopilotCommand):
+            self._set_autopilot(command.mode)
+        elif isinstance(command, SetStudioRecordingCommand):
+            self._set_studio_recording(command.options)
         elif isinstance(command, SetObjectPoseCommand):
             self._set_object_pose(command.joint, command.position, command.wxyz, hold=command.hold)
         elif isinstance(command, ShutdownCommand):
@@ -1685,6 +1792,12 @@ class MuJoCoSO101:
         if action.shape != (self.NUM_JOINTS,):
             msg = f"Expected action shape ({self.NUM_JOINTS},), got {action.shape}"
             raise ValueError(msg)
+        if self._autopilot.drives_arm:
+            if not self._ignored_action_logged:
+                logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
+                self._ignored_action_logged = True
+            return
+        self._ignored_action_logged = False
 
         if self._unit == "normalized":
             targets = normalized_to_radians(
@@ -1784,6 +1897,7 @@ class MuJoCoSO101:
             "_viser_host": self._viser_host,
             "_viser_port": self._viser_port,
             "_unit": self._unit,
+            "_studio_url": self._studio_url,
         }
 
     def __setstate__(self, state: dict) -> None:
@@ -1835,7 +1949,7 @@ class MuJoCoSO101:
         self._scene_xml_next_check = 0.0
         self._viser_sync_failed = False
         self._state_lock = threading.RLock()
-        self._init_control_state()
+        self._init_control_state(state.get("_studio_url", DEFAULT_STUDIO_URL))
 
 
 class BiMuJoCoSO101(MuJoCoSO101):

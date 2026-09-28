@@ -311,6 +311,7 @@ class TestMuJoCoSO101Pickling:
             "_viser_host": "127.0.0.1",
             "_viser_port": 9090,
             "_unit": "normalized",
+            "_studio_url": "http://127.0.0.1:7860",
         }
 
     def test_getstate_after_connect(self, mock_mujoco: MagicMock) -> None:

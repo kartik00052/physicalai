@@ -123,3 +123,30 @@ Next steps: pick the data path, prompt templates for pi0.5, and a decision on ho
 4. The exact rule templates for pi0.5, and which combinations to hold out.
 5. What the scripted demonstrator needs: aiming at a moving item, grasping, and placing in a bin.
 6. ~~How cracks are textured~~: one cube-mapped texture per color. What's still open is how cracks become visible at 224 px.
+
+## Autopilot, virtual leader and automatic Studio episodes
+
+The scripted demonstrator runs inside the simulation loop (`autopilot.py`) in one of two modes:
+
+- **drive**: it writes the actuators and the simulation ignores client actions.
+- **leader**: it only publishes its targets on `GET /leader`, in the follower's units.
+
+The plugin's Studio catalog adds a **MuJoCo SO-101 Virtual Leader** (`role="leader"`, `virtual_leader.py`). This is a read-only robot that polls `/leader` over one keep-alive loopback connection. Studio's teleoperation sends what it reads straight to the follower as the action, so the recorded actions are the demonstrator's commands, exactly as with a human on a leader arm. The leader imports no MuJoCo, because Studio's environment carries its own version. Its timestamp advances only when the simulation ticked, so a frozen simulation reads as a stalled leader.
+
+The demonstrator already integrates its IK from its own previous target rather than from measured joints. So the round trip through Studio adds lag, not oscillation. With targets sampled at 30 Hz and applied 60 ms late (`run_conveyor_demo.py --action-hz 30 --latency-ms 60`), 60/60 items were sorted with no failed grasps. At 120 ms, 60/60 were still sorted, with 22 grasp retries.
+
+Studio has no episode REST API, so `studio_recorder.py` joins the runtime websocket that the recording view uses:
+
+1. `GET /api/runtime/sessions` finds the live session for this simulation's follower (matched on `payload.name` = owner name). The session's `leader_name` gives the leader.
+2. The handshake repeats the follower and leader (Studio's identity digest covers them) with `camera_ids: []`. An empty camera list never restarts the session, and an empty claim neither pins nor releases the UI's cameras.
+3. The link never sends `disconnect`, which would stop Studio's session.
+
+`AutoRecorder` is pure logic, called each tick; it holds the feed through `ConveyorSort.set_feed_hold`, which is separate from the user's pause:
+
+- **waiting**: until the dataset is loaded, teleoperation is on and no recording is in progress.
+- **starting**: park the items, send `start_recording`, and hold the belt until Studio reports `is_recording`.
+- **recording**: when the conveyor episode ends, hold the belt and send `save_episode`, or `discard_episode` for mistakes when keeping only perfect episodes. Then go back to waiting.
+
+If Studio stops the recording itself, or the link fails, the automation stops and releases the belt. Studio's URL is a launch option (`--studio-url`), never an HTTP request field.
+
+Tested against a fake Studio on a real websocket, including a full episode on the real conveyor. Live discovery against a local Studio reports the missing session correctly. An end-to-end run with Studio's UI still needs this plugin reinstalled into Studio's environment.
