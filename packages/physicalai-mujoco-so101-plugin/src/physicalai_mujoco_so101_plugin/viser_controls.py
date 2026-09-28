@@ -298,6 +298,8 @@ class PanelState:
     """Point a free camera looks at by default."""
     view_extent: float = 1.0
     """Model size, used for the default camera distance."""
+    timing: Mapping[str, Any] = field(default_factory=dict)
+    """Real-time factor, control rate and camera frame rates (see ``MuJoCoSO101._timing_status``)."""
 
 
 @dataclass
@@ -312,6 +314,7 @@ class _Handles:
     dwell: Any = None
     belt_speed: Any = None
     episode_status: Any = None
+    performance: Any = None
     drag_toggle: Any = None
     gizmos: dict[str, Any] = field(default_factory=dict)
     preview_toggle: Any = None
@@ -342,6 +345,29 @@ def _downscale(frame: np.ndarray) -> np.ndarray:
         return frame
     size = (_PREVIEW_WIDTH, max(1, round(height * _PREVIEW_WIDTH / width)))
     return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+
+
+SLOW_REAL_TIME_FACTOR = 0.95
+"""Below this real-time factor the panel warns that the simulation lags the wall clock."""
+
+
+def _performance_markdown(timing: Mapping[str, Any]) -> str:
+    factor = timing.get("real_time_factor")
+    hz = timing.get("control_hz")
+    if factor is None or hz is None:
+        speed = "measuring..."
+    else:
+        speed = f"{float(factor):.2f}x real time ({float(hz):.0f} Hz control)"
+        if float(factor) < SLOW_REAL_TIME_FACTOR:
+            speed += " - below real time: the belt, arm and physics all run slower than the wall clock"
+    cameras = ", ".join(
+        f"{name} {float(fps):.0f} fps" if fps is not None else f"{name} -"
+        for name, fps in dict(timing.get("camera_fps") or {}).items()
+    )
+    lines = [f"**Sim speed:** {speed}"]
+    if cameras:
+        lines.append(f"**Cameras:** {cameras}")
+    return "  \n".join(lines)
 
 
 def _is_conveyor(episode: Mapping[str, Any]) -> bool:
@@ -442,6 +468,7 @@ class SimControlPanel:
             self._drags.clear()
         self._next_status = self._next_objects = self._next_preview = 0.0
         self._build_scene_controls(state)
+        self._build_performance(state)
         self._build_seed_controls(state)
         if state.episode.get("enabled"):
             self._build_episode_controls(state)
@@ -592,6 +619,10 @@ class SimControlPanel:
             if _is_server_event(event) or not fixed.value:
                 return
             self._submit(SetSeedCommand(seed=_seed_value()))
+
+    def _build_performance(self, state: PanelState) -> None:
+        with self._server.gui.add_folder("Performance"):
+            self._handles.performance = self._server.gui.add_markdown(_performance_markdown(state.timing))
 
     def _build_conveyor_controls(self, state: PanelState) -> None:
         gui = self._server.gui
@@ -807,6 +838,8 @@ class SimControlPanel:
 
     def _refresh_status(self, state: PanelState) -> None:
         handles = self._handles
+        if handles.performance is not None:
+            handles.performance.content = _performance_markdown(state.timing)
         if handles.scene_dropdown is not None:
             label = _scene_label(state)
             if label in handles.scene_dropdown.options:

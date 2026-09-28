@@ -52,6 +52,7 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
 
 - **Scene**: pick another scene that fits the running robot (single-arm or bimanual). **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action.
+- **Performance**: the simulation speed as a multiple of real time, the control loop rate, and each camera's frame rate, over the last two seconds. Below 0.95x real time, the belt, arm and physics all run slower than the wall clock, while Studio records and policies run at wall-clock rates. Keep it at 1.00x when recording or evaluating.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
@@ -235,7 +236,7 @@ Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles 
 
 ## Cameras over HTTP
 
-The plugin renders two camera feeds and serves them over HTTP:
+The plugin renders two camera feeds on their own thread and serves them over HTTP. The control loop only hands the camera thread a pose snapshot each tick, so rendering never delays physics:
 
 - `wrist` -> `http://127.0.0.1:8080/cameras/wrist/mjpeg`
 - `overview` -> `http://127.0.0.1:8080/cameras/overview/mjpeg`
@@ -278,23 +279,23 @@ curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type:
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                      |
-| --------------------------- | ------ | -------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                     |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, objects, cameras |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                            |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                       |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                  |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot           |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                       |
-| `/reset`                    | POST   | Reset/randomize the current scene                                                |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                         |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                 |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported    |
-| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt   |
-| `/objects`                  | GET    | Free-object joint names and world poses                                          |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object          |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                             |
+| Endpoint                    | Method | Description                                                                              |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                             |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, timing, objects, cameras |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                    |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                               |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                          |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                   |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                               |
+| `/reset`                    | POST   | Reset/randomize the current scene                                                        |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                 |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                         |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported            |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt           |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                  |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                  |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                     |
 
 Control requests are queued and applied on the next control cycle. Invalid bodies return `422`. Object coordinates must be finite and within ±2 m.
 

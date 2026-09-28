@@ -994,12 +994,14 @@ class TestCameraFrames:
     def _stream_one_frame(mock_mujoco: MagicMock, rendered: np.ndarray, *, mirror: bool) -> np.ndarray:
         _ = mock_mujoco
         robot = MuJoCoSO101(model_path="/fake/model.xml", cameras=[{"name": "wrist", "mirror_horizontal": mirror}])
+        robot._render_in_thread = False  # noqa: SLF001 - render on this thread, deterministically
         renderer = MagicMock()
         renderer.render.return_value = rendered
         with patch("mujoco.Renderer", return_value=renderer):
             robot.connect()
         robot._render_cameras()  # noqa: SLF001
         return robot._frame_buffers["wrist"].snapshot().frame  # noqa: SLF001
+
 
     def test_frames_are_streamed_as_rendered(self, mock_mujoco: MagicMock) -> None:
         """mujoco.Renderer already returns upright images; flipping again turns them upside down."""

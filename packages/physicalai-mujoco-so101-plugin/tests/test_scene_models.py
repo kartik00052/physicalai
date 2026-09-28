@@ -1,7 +1,8 @@
 """Exercise bundled models with real MuJoCo, without a renderer or display."""
 
+import time
 from dataclasses import asdict
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mujoco
 import numpy as np
@@ -336,3 +337,38 @@ def test_joint_and_control_ranges_match_the_urdf(model_path: str, urdf_name: str
     for name, (lower, upper) in limits.items():
         np.testing.assert_allclose(model.jnt_range[model.joint(name).id], (lower, upper), atol=1e-5, err_msg=name)
         np.testing.assert_allclose(model.actuator(name).ctrlrange, (lower, upper), atol=1e-4, err_msg=name)
+
+
+def test_cameras_render_on_their_own_thread_from_pose_snapshots() -> None:
+    scene = get_scene("conveyor_sort")
+    robot = MuJoCoSO101(
+        model_path=str(scene.scene_xml_path), scene_config=asdict(scene), cameras=[{"name": "overview", "fps": 100}]
+    )
+    rendered = np.full((4, 6, 3), 7, dtype=np.uint8)
+    renderer = MagicMock()
+    renderer.render.return_value = rendered
+    with patch("mujoco.Renderer", return_value=renderer):
+        robot.connect()
+        try:
+            assert robot._camera_thread is not None
+            deadline = time.monotonic() + 5.0
+            while robot._frame_buffers["overview"].snapshot() is None and time.monotonic() < deadline:
+                robot._step_and_sync()  # publishes a pose snapshot every tick
+                time.sleep(0.01)
+            snapshot = robot._frame_buffers["overview"].snapshot()
+            assert snapshot is not None
+            np.testing.assert_array_equal(snapshot.frame, rendered)
+            # The renderer got the camera thread's own MjData, not the simulation's.
+            rendered_from = renderer.update_scene.call_args.args[0]
+            assert rendered_from is not robot._data
+            np.testing.assert_allclose(rendered_from.qpos, robot._data.qpos)
+            for _ in range(5):
+                robot._step_and_sync()
+                time.sleep(0.01)
+            timing = robot._http_status()["timing"]
+            assert timing["cameras_on_thread"] is True
+            assert timing["control_hz"] is not None
+        finally:
+            robot.disconnect()
+    assert robot._camera_thread is None
+    renderer.close.assert_called()
