@@ -1,6 +1,6 @@
 # Design: `conveyor_sort` scene
 
-Status: proof of concept on branch `max/mujoco-conveyor-sort` (see [Proof of concept](#proof-of-concept-2026-09-25)). No scripted demonstrator or policy runs yet.
+Status: implemented. The scene, the [scripted demonstrator](#scripted-demonstrator) and [automatic Studio episodes](#autopilot-virtual-leader-and-automatic-studio-episodes) exist, and an ACT policy trained on about 100 recorded episodes runs from Studio. Still open: pi0.5 rule templates, recovery from drops, and how cracks become visible to the policy.
 
 ## Goal
 
@@ -97,7 +97,7 @@ Decisions made while building, including changes from the plan above:
 
 ### Scripted demonstrator
 
-`conveyor_demo.ConveyorDemonstrator` uses privileged state and writes the arm's joint targets directly. `scripts/run_conveyor_demo.py` scores it, sweeps belt speeds, or records a video. The data path (a virtual leader in Studio, or a headless dataset writer) is still to be decided.
+`conveyor_demo.ConveyorDemonstrator` uses privileged state and writes the arm's joint targets directly. `scripts/run_conveyor_demo.py` scores it, sweeps belt speeds, or records a video. Its episodes reach Studio through a virtual leader (see [below](#autopilot-virtual-leader-and-automatic-studio-episodes)); a headless dataset writer is only needed later, for DAgger.
 
 | Belt speed                  | 1 cm/s | 2 cm/s | 3 cm/s | 5 cm/s | 7 cm/s | 10 cm/s |
 | --------------------------- | ------ | ------ | ------ | ------ | ------ | ------- |
@@ -113,7 +113,7 @@ What it took to get there. Each of these is also a constraint for learned polici
 - **Item damping (0.0002):** without it, cylinders wobbled in the bins forever like spinning coins.
 - **Scoring:** an item that is off the belt and out of the gripper for 10 s is scored wherever it is, for example balanced on a bin rim. An episode always ends.
 
-Next steps: pick the data path, prompt templates for pi0.5, and a decision on how cracks become visible to the policy.
+Next steps: prompt templates for pi0.5, recovery from drops (disturbances while recording), and a decision on how cracks become visible to the policy.
 
 ## Open questions
 
@@ -121,7 +121,7 @@ Next steps: pick the data path, prompt templates for pi0.5, and a decision on ho
 2. ~~How the belt is driven~~: a slide-jointed slab (see the proof of concept).
 3. ~~How items enter~~: spacing along the belt, one item at a time.
 4. The exact rule templates for pi0.5, and which combinations to hold out.
-5. What the scripted demonstrator needs: aiming at a moving item, grasping, and placing in a bin.
+5. ~~What the scripted demonstrator needs~~: see [Scripted demonstrator](#scripted-demonstrator).
 6. ~~How cracks are textured~~: one cube-mapped texture per color. What's still open is how cracks become visible at 224 px.
 
 ## Autopilot, virtual leader and automatic Studio episodes

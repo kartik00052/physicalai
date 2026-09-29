@@ -51,7 +51,8 @@ class Autopilot:
         return self.mode == "drive"
 
     def bind(self, model: object | None, conveyor: ConveyorSort | None) -> None:
-        """Attach to a freshly loaded scene; scenes without a conveyor have no autopilot."""
+        """Attach to a freshly loaded scene, switched off; scenes without a conveyor have no autopilot."""
+        self._mode = "off"  # a mode chosen for an earlier scene must not come back with this one
         if model is None or conveyor is None:
             self._demo = None
             return

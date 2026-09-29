@@ -31,7 +31,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
 
 from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
@@ -168,6 +168,15 @@ class StudioRecordingRequest(BaseModel):
     task: Annotated[str, Field(min_length=1, max_length=MAX_TASK_CHARS)] = DEFAULT_TASK
     keep: Literal["all", "perfect"] = "perfect"
     max_episodes: Annotated[int, Field(ge=0, le=MAX_EPISODES)] = 0
+
+    @field_validator("task")
+    @classmethod
+    def _task_has_text(cls, task: str) -> str:
+        task = task.strip()
+        if not task:
+            msg = "task must not be blank"
+            raise ValueError(msg)
+        return task
 
 
 class SeedRequest(BaseModel):
@@ -549,7 +558,10 @@ def _add_automation_routes(
 
         @app.get("/leader")
         def leader() -> dict[str, Any]:
-            return get_leader()
+            snapshot = get_leader()
+            if "joint_positions" not in snapshot:
+                raise HTTPException(status_code=503, detail="No leader pose yet: the simulation has not ticked")
+            return snapshot
 
     @app.post("/autopilot")
     def autopilot(request: AutopilotRequest) -> dict[str, Any]:

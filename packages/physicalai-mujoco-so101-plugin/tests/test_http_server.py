@@ -463,6 +463,14 @@ class TestAutomationRoutes:
     def test_leader_serves_the_pose(self, leader_app: dict) -> None:
         assert leader_app["client"].get("/leader").json() == leader_app["leader"]
 
+    def test_leader_is_unavailable_until_the_first_tick(self, leader_app: dict) -> None:
+        leader = leader_app["leader"]
+        for key in ("mode", "unit", "joint_positions"):
+            leader.pop(key, None)
+        response = leader_app["client"].get("/leader")
+        assert response.status_code == 503
+        assert "not ticked" in response.json()["detail"]
+
     def test_no_leader_route_without_a_source(self, client: TestClient) -> None:
         assert client.get("/leader").status_code == 404
 
@@ -479,7 +487,13 @@ class TestAutomationRoutes:
         body = {"enabled": True, "task": "Sort", "keep": "all", "max_episodes": 5}
         assert client.post("/studio/recording", json=body).status_code == 409
         leader_app["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
-        for bad in ({"task": "x" * 201}, {"keep": "most"}, {"max_episodes": -1}, {"studio_url": "http://evil"}):
+        for bad in (
+            {"task": "x" * 201},
+            {"task": "   "},
+            {"keep": "most"},
+            {"max_episodes": -1},
+            {"studio_url": "http://evil"},
+        ):
             assert client.post("/studio/recording", json={**body, **bad}).status_code == 422, bad
         assert leader_app["commands"].empty()
         assert client.post("/studio/recording", json=body).status_code == 200
@@ -487,3 +501,5 @@ class TestAutomationRoutes:
         assert command == SetStudioRecordingCommand(options=RecordingOptions(task="Sort", keep="all", max_episodes=5))
         assert client.post("/studio/recording", json={"enabled": False}).status_code == 200
         assert leader_app["commands"].get_nowait() == SetStudioRecordingCommand(options=None)
+        assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
+        assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed

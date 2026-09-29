@@ -78,6 +78,27 @@ def test_reads_positions_and_advances_only_with_the_simulation(served: tuple[_Le
     assert not robot.is_connected()
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"seq": 5, "joint_names": list(SO101_JOINT_ORDER)},  # no pose yet
+        {"seq": 5, "joint_names": list(SO101_JOINT_ORDER), "joint_positions": ["a"] * 6},
+        {"seq": 5, "joint_names": list(SO101_JOINT_ORDER), "joint_positions": [1.0, 2.0]},
+    ],
+    ids=["missing", "not-numbers", "wrong-length"],
+)
+def test_an_incomplete_pose_is_a_connection_error(served: tuple[_Leader, int], payload: dict[str, Any]) -> None:
+    leader, port = served
+    robot = MuJoCoVirtualLeader(http_port=port)
+    robot.connect()
+    try:
+        leader.payload = payload
+        with pytest.raises(ConnectionError, match="Leader pose"):
+            robot.get_observation()
+    finally:
+        robot.disconnect()
+
+
 def test_rejects_a_simulation_with_another_joint_layout(served: tuple[_Leader, int]) -> None:
     leader, port = served
     leader.payload = {**leader.payload, "joint_names": ["left_shoulder_pan"]}

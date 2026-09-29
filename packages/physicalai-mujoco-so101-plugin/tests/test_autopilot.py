@@ -105,6 +105,9 @@ def test_switching_to_a_scene_without_a_belt_turns_the_autopilot_off(robot: MuJo
     assert robot._http_status()["autopilot"] == {"available": False, "mode": "off", "phase": None, "target": None}
     robot._automation.set_autopilot("drive")  # ignored: nothing to drive
     assert robot._automation.autopilot.mode == "off"
+    assert robot._switch_to_scene("conveyor_sort")
+    assert robot._automation.autopilot.mode == "off"  # "drive" does not come back with the belt
+    assert not robot._automation.drives_arm
 
 
 def test_autopilot_markdown() -> None:

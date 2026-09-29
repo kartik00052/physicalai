@@ -88,7 +88,7 @@ def _get_json(base_url: str, path: str, timeout_s: float = 3.0) -> Any:  # noqa:
         conn.request("GET", path, headers={"Accept": "application/json"})
         response = conn.getresponse()
         body = response.read()
-    except OSError as exc:
+    except (OSError, http.client.HTTPException) as exc:
         msg = f"Studio is not reachable at {base_url}: {exc}"
         raise StudioError(msg) from exc
     finally:
@@ -96,7 +96,11 @@ def _get_json(base_url: str, path: str, timeout_s: float = 3.0) -> Any:  # noqa:
     if response.status != 200:  # noqa: PLR2004
         msg = f"Studio answered HTTP {response.status} for {path}"
         raise StudioError(msg)
-    return json.loads(body)
+    try:
+        return json.loads(body)
+    except ValueError as exc:
+        msg = f"Studio answered {path} with invalid JSON"
+        raise StudioError(msg) from exc
 
 
 @dataclass(frozen=True)
@@ -299,12 +303,15 @@ class StudioLink:
         except StudioError as exc:
             self._fail(str(exc))
             return
+        except Exception as exc:  # noqa: BLE001 - e.g. a response shape from another Studio version
+            self._fail(f"Could not read Studio's sessions: {exc!r}")
+            return
         with self._lock:
             self._target = target
         ws_url = self._base_url.replace("http", "ws", 1) + f"/api/projects/{target.project_id}/runtime/ws"
         try:
             ws = self._open(ws_url)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - refused, bad URL or handshake rejected: all end the link
             self._fail(f"Could not open {ws_url}: {exc}")
             return
         try:

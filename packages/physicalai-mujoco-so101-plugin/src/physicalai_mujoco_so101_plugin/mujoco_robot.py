@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import queue
 import sys
 import threading
@@ -355,13 +356,10 @@ class MuJoCoSO101:
     def disconnect(self) -> None:
         """Release simulation resources."""
         self._stop_http_server()
-        self._stop_camera_thread()
+        stopped = self._stop_camera_thread()
         self._automation.close()
         with self._state_lock:
-            for renderer in self._camera_renderers.values():
-                with contextlib.suppress(Exception):
-                    renderer.close()
-            self._camera_renderers.clear()
+            self._release_camera_renderers(stopped=stopped)
             self._camera_last_frame_ts.clear()
             self._frame_buffers.clear()
             self._block_joint_addrs.clear()
@@ -477,43 +475,59 @@ class MuJoCoSO101:
                 config.fps,
                 "own thread" if self._render_in_thread else "control loop",
             )
+        # Each camera thread gets its own renderer dict, bound to its own model. A thread that
+        # outlives stop() can then only touch its own renderers, never the next scene's.
+        renderers: dict[str, object] = {}
+        with self._state_lock:
+            self._camera_renderers = renderers
         if self._render_in_thread:
             self._camera_thread = CameraThread(
                 self._model,
-                setup=self._create_camera_renderers,
-                render=self._render_cameras,
-                teardown=self._close_camera_renderers,
+                setup=functools.partial(self._create_camera_renderers, renderers),
+                render=functools.partial(self._render_cameras, renderers=renderers),
+                teardown=functools.partial(self._close_camera_renderers, renderers),
             )
             self._camera_thread.start()
         else:
-            self._create_camera_renderers()
+            self._create_camera_renderers(renderers)
 
-    def _create_camera_renderers(self) -> None:
-        """Create one offscreen renderer per camera, on the thread that will use them."""
+    def _create_camera_renderers(self, renderers: dict[str, object]) -> None:
+        """Fill `renderers` with one offscreen renderer per camera, on the thread that will use them."""
         import mujoco  # noqa: PLC0415
 
-        renderers: dict[str, object] = {}
+        created: dict[str, object] = {}
         for config in self._cameras:
             try:
-                renderers[config.name] = mujoco.Renderer(self._model, config.height, config.width)
+                created[config.name] = mujoco.Renderer(self._model, config.height, config.width)
             except OSError as exc:
                 logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
         with self._state_lock:
-            self._camera_renderers.update(renderers)
+            renderers.update(created)
 
-    def _close_camera_renderers(self) -> None:
+    def _close_camera_renderers(self, renderers: dict[str, object]) -> None:
         with self._state_lock:
-            renderers = list(self._camera_renderers.values())
-            self._camera_renderers.clear()
-        for renderer in renderers:
+            closing = list(renderers.values())
+            renderers.clear()
+        for renderer in closing:
             with contextlib.suppress(Exception):
                 renderer.close()
 
-    def _stop_camera_thread(self) -> None:
-        """Stop camera rendering; call without holding ``_state_lock`` (the thread's teardown takes it)."""
+    def _stop_camera_thread(self) -> bool:
+        """Stop camera rendering; call without holding ``_state_lock`` (the thread's teardown takes it).
+
+        Returns:
+            Whether no camera thread is left running.
+        """
         thread, self._camera_thread = self._camera_thread, None
-        if thread is not None:
-            thread.stop()
+        return thread is None or thread.stop()
+
+    def _release_camera_renderers(self, *, stopped: bool) -> None:
+        """Drop the current renderers; close them only if no camera thread may still use them."""
+        renderers, self._camera_renderers = self._camera_renderers, {}
+        if stopped:
+            self._close_camera_renderers(renderers)  # no-op after the thread closed its own
+        else:
+            logger.warning("Leaving {} camera renderer(s) to the camera thread that did not stop", len(renderers))
 
     def _init_block_joint_addrs(self) -> None:
         import mujoco  # noqa: PLC0415
@@ -904,9 +918,9 @@ class MuJoCoSO101:
             on_reset(new_model, new_data, self._rng)
 
         # The camera thread renders the old model; stop it before taking the lock it needs to shut down.
-        self._stop_camera_thread()
+        stopped = self._stop_camera_thread()
         with self._state_lock:
-            self._close_camera_renderers()  # no-op after the thread closed its own
+            self._release_camera_renderers(stopped=stopped)
 
             self._model_path = str(xml_path)
             self._model = new_model
@@ -1479,12 +1493,13 @@ class MuJoCoSO101:
             )
         mujoco.mj_forward(self._model, self._data)
 
-    def _render_cameras(self, data: object | None = None) -> None:
-        """Render every camera that is due, from `data` (the sim's own data by default)."""
+    def _render_cameras(self, data: object | None = None, renderers: dict[str, object] | None = None) -> None:
+        """Render every camera that is due, from `data` with `renderers` (the sim's own by default)."""
         data = self._data if data is None else data
+        renderers = self._camera_renderers if renderers is None else renderers
         now = time.monotonic()
         for config in self._cameras:
-            renderer = self._camera_renderers.get(config.name)
+            renderer = renderers.get(config.name)
             if renderer is None:
                 continue
 

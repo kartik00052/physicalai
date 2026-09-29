@@ -138,7 +138,11 @@ class MuJoCoVirtualLeader:
             raise ConnectionError(msg)
         if self._last is not None and seq == self._last_seq:
             return self._last
-        positions = np.asarray(payload["joint_positions"], dtype=np.float32)
+        try:
+            positions = np.asarray(payload.get("joint_positions"), dtype=np.float32)
+        except (TypeError, ValueError) as exc:
+            msg = "Leader pose has no numeric joint positions"
+            raise ConnectionError(msg) from exc
         if positions.shape != (len(self.joint_names),):
             msg = f"Leader pose has shape {positions.shape}, expected ({len(self.joint_names)},)"
             raise ConnectionError(msg)
@@ -170,4 +174,12 @@ class MuJoCoVirtualLeader:
         if response.status != 200:  # noqa: PLR2004
             msg = f"GET /leader returned HTTP {response.status}"
             raise ConnectionError(msg)
-        return json.loads(body)
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            msg = "GET /leader returned invalid JSON"
+            raise ConnectionError(msg) from exc
+        if not isinstance(payload, dict):
+            msg = "GET /leader did not return a JSON object"
+            raise ConnectionError(msg)
+        return payload

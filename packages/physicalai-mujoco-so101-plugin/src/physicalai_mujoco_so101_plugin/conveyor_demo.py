@@ -43,7 +43,7 @@ MAX_IK_STEP = 0.25
 SYMMETRY = {"cube": np.pi / 2, "hex": np.pi / 3, "cylinder": None}
 """Yaw period of each item shape's faces (``None``: any yaw works)."""
 
-Phase = Literal["idle", "approach", "descend", "close", "lift", "carry", "lower", "rise", "return"]
+Phase = Literal["idle", "approach", "descend", "close", "lift", "carry", "lower", "release", "rise", "return"]
 
 
 @dataclass
@@ -397,9 +397,12 @@ class ConveyorDemonstrator:
                 plan.phase, plan.since = "lower", now
         elif plan.phase == "lower":
             if self._raise_to(cfg.drop_z, dt, cfg.descend_speed):
+                plan.phase, plan.since = "release", now  # time the release from when the jaws open
                 self._grip = cfg.grip_open
-                if now - plan.since > cfg.release_s:
-                    plan.phase = "rise"
+        elif plan.phase == "release":
+            self._grip = cfg.grip_open
+            if now - plan.since > cfg.release_s:
+                plan.phase = "rise"
         elif plan.phase in {"rise", "return"}:
             self._grip = cfg.grip_open
             if self._raise_to(cfg.hover_z, dt):

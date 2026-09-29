@@ -372,3 +372,56 @@ def test_cameras_render_on_their_own_thread_from_pose_snapshots() -> None:
             robot.disconnect()
     assert robot._camera_thread is None
     renderer.close.assert_called()
+
+
+def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
+    """A render stuck past stop() must not see, or close, the next scene's renderers."""
+    import threading
+
+    from physicalai_mujoco_so101_plugin import camera_thread
+
+    scene = get_scene("conveyor_sort")
+    robot = MuJoCoSO101(
+        model_path=str(scene.scene_xml_path), scene_config=asdict(scene), cameras=[{"name": "overview", "fps": 100}]
+    )
+    rendering, release = threading.Event(), threading.Event()
+    stuck = MagicMock()
+
+    def hang() -> np.ndarray:
+        rendering.set()
+        release.wait(10.0)
+        return np.zeros((4, 6, 3), dtype=np.uint8)
+
+    stuck.render.side_effect = hang
+    fresh = MagicMock()
+    fresh.render.return_value = np.zeros((4, 6, 3), dtype=np.uint8)
+    original_stop = camera_thread.CameraThread.stop
+    with (
+        patch("mujoco.Renderer", side_effect=[stuck, fresh]),
+        patch.object(camera_thread.CameraThread, "stop", lambda self, timeout_s=0.2: original_stop(self, timeout_s)),
+    ):
+        robot.connect()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not rendering.is_set() and time.monotonic() < deadline:
+                robot._step_and_sync()
+                time.sleep(0.01)
+            assert rendering.is_set()
+            assert robot._switch_to_scene("single_pick_place")  # the old thread is still inside render()
+            stuck.close.assert_not_called()  # left to the thread that still uses it
+            deadline = time.monotonic() + 5.0
+            while fresh.update_scene.call_count == 0 and time.monotonic() < deadline:
+                robot._step_and_sync()
+                time.sleep(0.01)
+            assert fresh.update_scene.call_count > 0
+            release.set()
+            deadline = time.monotonic() + 5.0
+            while not stuck.close.called and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stuck.close.assert_called_once()  # by its own thread, once the render returned
+            fresh.close.assert_not_called()
+            assert stuck.update_scene.call_count == 1  # never used again after the switch
+        finally:
+            release.set()
+            robot.disconnect()
+    fresh.close.assert_called_once()

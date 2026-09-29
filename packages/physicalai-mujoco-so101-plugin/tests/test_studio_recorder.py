@@ -26,7 +26,7 @@ from physicalai_mujoco_so101_plugin.studio_recorder import (
 from physicalai_mujoco_so101_plugin.viser_controls import _studio_markdown
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
 FOLLOWER = "9fd891f9-11a3-41af-b0e0-8162c2393536"
 LEADER = "6d3faa01-3324-4007-b98d-05fc73144a8d"
@@ -332,6 +332,51 @@ def test_link_reports_a_failed_discovery() -> None:
     link.start()
     _wait(lambda: link.phase == "error")
     assert link.error == "Studio is not reachable"
+
+
+def _unexpected_sessions_shape(_url: str, _owner: str) -> StudioTarget:
+    raise KeyError("follower_id")  # e.g. a response from another Studio version
+
+
+def _found_target(_url: str, _owner: str) -> StudioTarget:
+    return TARGET
+
+
+def _rejected_handshake(_url: str) -> Any:  # noqa: ANN401
+    raise RuntimeError("server rejected WebSocket connection: HTTP 403")  # not an OSError
+
+
+@pytest.mark.parametrize(
+    ("discover", "connect", "match"),
+    [
+        (_unexpected_sessions_shape, None, "Could not read Studio's sessions"),
+        (_found_target, _rejected_handshake, "Could not open"),
+    ],
+    ids=["unexpected-discovery-error", "rejected-handshake"],
+)
+def test_link_turns_any_startup_failure_into_an_error(
+    discover: Callable[[str, str], StudioTarget], connect: Callable[[str], Any] | None, match: str
+) -> None:
+    """Otherwise the link stays "connecting" and the recorder holds the belt forever."""
+    link = StudioLink("http://127.0.0.1:1", "mujoco-so101-follow", discover=discover, connect=connect)
+    link.start()
+    _wait(lambda: link.phase == "error")
+    assert match in (link.error or "")
+
+
+def test_invalid_json_from_studio_is_a_studio_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import http.client
+
+    class Response:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"<html>proxy login</html>"
+
+    monkeypatch.setattr(http.client.HTTPConnection, "request", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", lambda _self: Response())
+    with pytest.raises(StudioError, match="invalid JSON"):
+        discover_session("http://127.0.0.1:1", "mujoco-so101-follow")
 
 
 @pytest.mark.slow

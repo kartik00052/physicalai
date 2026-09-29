@@ -103,14 +103,22 @@ class CameraThread:
         self._thread = threading.Thread(target=self._run, name="mujoco-cameras", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout_s: float = 5.0) -> None:
-        """Stop the camera thread and wait for it to close its renderers."""
+    def stop(self, timeout_s: float = 5.0) -> bool:
+        """Stop the camera thread and wait for it to close its renderers.
+
+        Returns:
+            Whether the thread ended. If not, it still owns its renderers and closes them itself
+            when its current render returns.
+        """
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout_s)
-            if self._thread.is_alive():
-                logger.warning("Camera thread did not stop within {:.1f}s", timeout_s)
-        self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is None:
+            return True
+        thread.join(timeout=timeout_s)
+        if thread.is_alive():
+            logger.warning("Camera thread did not stop within {:.1f}s", timeout_s)
+            return False
+        return True
 
     def publish(self, data: object) -> None:
         """Hand the camera thread the current poses (call once per sim tick)."""

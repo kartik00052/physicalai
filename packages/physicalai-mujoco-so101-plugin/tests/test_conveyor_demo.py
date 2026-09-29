@@ -79,8 +79,11 @@ def test_demonstrator_sorts_a_short_episode(sim: tuple) -> None:
         conveyor._config.items_per_episode = 3
         demo = ConveyorDemonstrator(model, conveyor)
         dt = SUBSTEPS * model.opt.timestep
+        released_at: list[float] = []  # sim time of every tick spent releasing an item
         while conveyor.status()["episode_count"] < 1 and data.time < 60.0:
             demo.step(data, dt)
+            if demo.phase == "release":
+                released_at.append(float(data.time))
             for _ in range(SUBSTEPS):
                 mujoco.mj_step(model, data)
             conveyor.update(model, data)
@@ -90,3 +93,7 @@ def test_demonstrator_sorts_a_short_episode(sim: tuple) -> None:
     assert status["episode_count"] == 1
     assert status["last_episode"]["correct"] >= 2
     assert demo.stats.attempts >= 3
+    # The jaws stay open for the whole release time at drop height, not what is left after lowering.
+    releases = np.split(np.asarray(released_at), np.flatnonzero(np.diff(released_at) > 2 * dt) + 1)
+    assert len(releases) >= 2
+    assert all(ticks[-1] - ticks[0] >= demo.config.release_s - 2 * dt for ticks in releases)
