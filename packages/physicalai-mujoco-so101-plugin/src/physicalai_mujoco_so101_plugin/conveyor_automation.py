@@ -104,11 +104,14 @@ class ConveyorAutomation:
         self.autopilot.bind(model, conveyor)
         if conveyor is None and self.recorder.phase != "off":
             self.recorder.disable("Automatic recording needs the conveyor scene.")
+        elif conveyor is not None:
+            self.recorder.restart_episode("The scene was reloaded.")
         return conveyor
 
     def reset(self) -> None:
-        """Forget the autopilot's current pick; call after a scene reset teleports things."""
+        """Forget the autopilot's current pick and restart a Studio episode; call after a scene reset."""
         self.autopilot.reset()
+        self.recorder.restart_episode("The scene was reset.")
 
     def close(self) -> None:
         """Detach from Studio; call when the simulation disconnects."""

@@ -453,6 +453,21 @@ class AutoRecorder:
         if self._phase not in {"done", "stopped", "error"} or message:
             self._set_phase("off", message)
 
+    def restart_episode(self, reason: str) -> None:
+        """Discard the Studio episode being recorded, because the scene jumped (a reset or a reload).
+
+        The episode then holds a teleport, and a reloaded conveyor counts its
+        episodes from zero again. After the discard the cycle starts a fresh
+        episode as usual. Other phases need nothing: an episode's start is
+        taken when Studio begins recording it.
+        """
+        if self._phase != "recording" or self._link is None:
+            return
+        self._request_id = uuid.uuid4().hex
+        self._pending_keep = False
+        self._link.send("discard_episode", request_id=self._request_id)
+        self._set_phase("saving", f"{reason} Discarding the episode in progress...")
+
     def update(self, episode_count: int, last_episode: Mapping[str, int] | None) -> RecorderDirective:
         """Advance the cycle for one simulation tick.
 

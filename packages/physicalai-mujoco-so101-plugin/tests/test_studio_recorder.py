@@ -196,6 +196,37 @@ def test_waits_until_studio_is_ready(state: dict[str, Any], message: str) -> Non
     assert link.sent == []
 
 
+def test_a_scene_jump_discards_the_episode_and_starts_a_fresh_one() -> None:
+    recorder, link = _recorder()
+    recorder.update(3, None)
+    recorder.update(3, None)
+    link.state = {**READY, "is_recording": True}
+    recorder.update(3, None)  # recording from conveyor episode 3
+    recorder.restart_episode("The scene was reloaded.")
+    assert link.sent[-1][0] == "discard_episode"
+    assert recorder.phase == "saving"
+    assert recorder.status()["message"].startswith("The scene was reloaded.")
+    link.ack_last()
+    link.state = dict(READY)
+    recorder.update(0, None)  # the reloaded conveyor counts from zero
+    assert recorder.phase == "waiting"
+    assert recorder.status()["discarded"] == 1
+    assert recorder.update(0, None).clear_belt
+    link.state = {**READY, "is_recording": True}
+    recorder.update(0, None)
+    recorder.update(1, {"correct": 10, "wrong": 0, "missed": 0})  # the first new episode ends it
+    assert link.sent[-1][0] == "save_episode"
+
+
+def test_a_scene_jump_outside_an_episode_changes_nothing() -> None:
+    recorder, link = _recorder()
+    recorder.update(0, None)
+    recorder.update(0, None)  # starting: Studio has not begun recording yet
+    recorder.restart_episode("The scene was reset.")
+    assert recorder.phase == "starting"
+    assert [event for event, _data, _id in link.sent] == ["start_recording"]
+
+
 def test_stops_when_studio_stops_the_recording_or_the_link_fails() -> None:
     recorder, link = _recorder()
     recorder.update(0, None)

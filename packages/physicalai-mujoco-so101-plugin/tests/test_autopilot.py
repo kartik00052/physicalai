@@ -115,3 +115,32 @@ def test_autopilot_markdown() -> None:
     assert _autopilot_markdown({"mode": "drive", "phase": "carry", "target": "item_cube_red"}) == (
         "**Autopilot:** carry (item_cube_red)"
     )
+
+
+@pytest.mark.parametrize("jump", ["reload", "reset"])
+def test_a_reload_or_reset_discards_the_studio_episode_in_progress(robot: MuJoCoSO101, jump: str) -> None:
+    from physicalai_mujoco_so101_plugin.studio_recorder import AutoRecorder, RecordingOptions
+
+    sent: list[str] = []
+
+    class Link:
+        phase, error, target = "connected", None, None
+        state = {"dataset_loaded": True, "follower_source": "teleop", "is_recording": True}
+
+        def start(self) -> None: ...
+        def close(self) -> None: ...
+        def take_ack(self, _request_id: str) -> None: ...
+
+        def send(self, event: str, _data: object = None, request_id: str | None = None) -> None:
+            sent.append(event)
+
+    recorder = AutoRecorder(Link)
+    robot._automation.recorder = recorder
+    recorder.enable(RecordingOptions())
+    recorder._phase = "recording"  # mid-episode
+    if jump == "reload":
+        assert robot._switch_to_scene("conveyor_sort")
+    else:
+        robot._run_scene_reset()
+    assert sent == ["discard_episode"]
+    assert recorder.phase == "saving"
