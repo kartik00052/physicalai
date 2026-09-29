@@ -491,14 +491,15 @@ class MuJoCoSO101:
         else:
             self._create_camera_renderers(renderers)
 
-    def _create_camera_renderers(self, renderers: dict[str, object]) -> None:
-        """Fill `renderers` with one offscreen renderer per camera, on the thread that will use them."""
+    def _create_camera_renderers(self, renderers: dict[str, object], model: object | None = None) -> None:
+        """Fill `renderers` with one renderer per camera for `model`, on the thread that will use them."""
         import mujoco  # noqa: PLC0415
 
+        model = self._model if model is None else model
         created: dict[str, object] = {}
         for config in self._cameras:
             try:
-                created[config.name] = mujoco.Renderer(self._model, config.height, config.width)
+                created[config.name] = mujoco.Renderer(model, config.height, config.width)
             except OSError as exc:
                 logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
         with self._state_lock:
@@ -1499,6 +1500,8 @@ class MuJoCoSO101:
         renderers = self._camera_renderers if renderers is None else renderers
         now = time.monotonic()
         for config in self._cameras:
+            if renderers is not self._camera_renderers:
+                return  # a camera thread that outlived stop(): the scene moved on, publish nothing
             renderer = renderers.get(config.name)
             if renderer is None:
                 continue
@@ -1518,6 +1521,8 @@ class MuJoCoSO101:
                 logger.debug("Camera render error for '{}': {}", config.name, exc)
                 continue
 
+            if renderers is not self._camera_renderers:
+                return  # the scene switched while this frame rendered
             if config.mirror_horizontal:
                 frame = frame[:, ::-1, :]
             frame = np.ascontiguousarray(frame)

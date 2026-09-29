@@ -390,14 +390,21 @@ def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
     def hang() -> np.ndarray:
         rendering.set()
         release.wait(10.0)
-        return np.zeros((4, 6, 3), dtype=np.uint8)
+        return np.full((4, 6, 3), 99, dtype=np.uint8)  # an old-scene frame
 
     stuck.render.side_effect = hang
     fresh = MagicMock()
     fresh.render.return_value = np.zeros((4, 6, 3), dtype=np.uint8)
     original_stop = camera_thread.CameraThread.stop
+    renderers = iter([stuck, fresh])
+    built_for: list[object] = []
+
+    def build(model: object, _height: int, _width: int) -> MagicMock:
+        built_for.append(model)
+        return next(renderers)
+
     with (
-        patch("mujoco.Renderer", side_effect=[stuck, fresh]),
+        patch("mujoco.Renderer", side_effect=build),
         patch.object(camera_thread.CameraThread, "stop", lambda self, timeout_s=0.2: original_stop(self, timeout_s)),
     ):
         robot.connect()
@@ -407,6 +414,7 @@ def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
                 robot._step_and_sync()
                 time.sleep(0.01)
             assert rendering.is_set()
+            old_model = robot._model
             assert robot._switch_to_scene("single_pick_place")  # the old thread is still inside render()
             stuck.close.assert_not_called()  # left to the thread that still uses it
             deadline = time.monotonic() + 5.0
@@ -419,6 +427,10 @@ def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
             while not stuck.close.called and time.monotonic() < deadline:
                 time.sleep(0.01)
             stuck.close.assert_called_once()  # by its own thread, once the render returned
+            assert built_for == [old_model, robot._model]  # each thread renders its own model
+            latest = robot._frame_buffers["overview"].snapshot()
+            assert latest is not None
+            assert not (latest.frame == 99).all()  # the late old-scene frame was dropped
             fresh.close.assert_not_called()
             assert stuck.update_scene.call_count == 1  # never used again after the switch
         finally:

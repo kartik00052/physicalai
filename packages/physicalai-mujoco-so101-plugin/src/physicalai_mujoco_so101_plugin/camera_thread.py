@@ -78,7 +78,7 @@ class CameraThread:
         self,
         model: object,
         *,
-        setup: Callable[[], None],
+        setup: Callable[[object], None],
         render: Callable[[object], None],
         teardown: Callable[[], None],
     ) -> None:
@@ -86,7 +86,7 @@ class CameraThread:
 
         Args:
             model: The MuJoCo model being simulated (read-only here).
-            setup: Creates the renderers.
+            setup: Creates the renderers for the model it is given (this thread's, never a newer one).
             render: Renders the cameras that are due, from the given ``MjData``.
             teardown: Closes the renderers.
         """
@@ -128,7 +128,7 @@ class CameraThread:
         import mujoco  # noqa: PLC0415
 
         try:
-            self._setup()
+            self._setup(self._model)
             data = mujoco.MjData(self._model)
             loaded = -1
             while not self._stop.is_set():
