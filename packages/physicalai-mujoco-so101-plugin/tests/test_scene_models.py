@@ -437,3 +437,25 @@ def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
             release.set()
             robot.disconnect()
     fresh.close.assert_called_once()
+
+
+def test_the_camera_thread_renders_nothing_before_the_first_pose() -> None:
+    """A zeroed snapshot puts every body at the origin with zero quaternions; never render it."""
+    from physicalai_mujoco_so101_plugin.camera_thread import CameraThread
+
+    model = mujoco.MjModel.from_xml_path(str(get_scene("conveyor_sort").scene_xml_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    seen: list[np.ndarray] = []
+    thread = CameraThread(model, setup=lambda _model: None, render=lambda d: seen.append(d.qpos.copy()), teardown=lambda: None)
+    thread.start()
+    try:
+        time.sleep(0.05)
+        assert seen == []
+        thread.publish(data)
+        deadline = time.monotonic() + 2.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.005)
+        np.testing.assert_array_equal(seen[0], data.qpos)
+    finally:
+        assert thread.stop()

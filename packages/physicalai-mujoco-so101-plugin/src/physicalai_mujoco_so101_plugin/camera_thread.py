@@ -130,8 +130,11 @@ class CameraThread:
         try:
             self._setup(self._model)
             data = mujoco.MjData(self._model)
-            loaded = -1
+            loaded = 0  # nothing published yet: the zeroed snapshot is not a pose
             while not self._stop.is_set():
+                if self.snapshot.seq == 0:
+                    self._stop.wait(_IDLE_S)
+                    continue
                 if self.snapshot.seq != loaded:
                     loaded = self.snapshot.load_into(data)
                     # Positions only: kinematics, cameras, lights, flex vertices.

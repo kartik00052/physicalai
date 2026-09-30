@@ -487,6 +487,7 @@ class MuJoCoSO101:
                 render=functools.partial(self._render_cameras, renderers=renderers),
                 teardown=functools.partial(self._close_camera_renderers, renderers),
             )
+            self._camera_thread.publish(self._data)  # the first frame shows the real scene
             self._camera_thread.start()
         else:
             self._create_camera_renderers(renderers)
