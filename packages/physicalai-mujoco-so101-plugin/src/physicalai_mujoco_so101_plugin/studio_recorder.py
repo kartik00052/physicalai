@@ -45,6 +45,8 @@ MAX_TASK_CHARS = 200
 MAX_EPISODES = 10_000
 FOLLOWER_TYPES = frozenset({"MuJoCo_SO101_Follower"})
 DEFAULT_TASK = "Sort the items: cracked or purple ones into reject, the others into the bin of their color."
+CONNECT_TIMEOUT_S = 30.0
+"""Discovery (a few 3 s requests), the 5 s websocket open and Studio's first state all fit well inside."""
 START_TIMEOUT_S = 15.0
 SAVE_TIMEOUT_S = 120.0
 
@@ -484,6 +486,10 @@ class AutoRecorder:
         if self._phase == "connecting":
             if link.phase == "connected" and state is not None:
                 self._set_phase("waiting", "")
+            elif self._clock() - self._since > CONNECT_TIMEOUT_S:
+                reason = "sent no session state" if link.phase == "connected" else "did not answer in time"
+                self._finish("error", f"Studio {reason}; is the robot session running?")
+                return RecorderDirective()
             return RecorderDirective(hold_feed=True)
         if state is None:
             return RecorderDirective(hold_feed=True)

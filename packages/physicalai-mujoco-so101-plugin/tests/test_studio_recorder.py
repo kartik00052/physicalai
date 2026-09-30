@@ -15,6 +15,7 @@ from physicalai_mujoco_so101_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_so101_plugin.mujoco_robot import MuJoCoSO101
 from physicalai_mujoco_so101_plugin.scene_registry import get_scene
 from physicalai_mujoco_so101_plugin.studio_recorder import (
+    CONNECT_TIMEOUT_S,
     AutoRecorder,
     RecordingOptions,
     StudioError,
@@ -225,6 +226,21 @@ def test_a_scene_jump_outside_an_episode_changes_nothing() -> None:
     recorder.restart_episode("The scene was reset.")
     assert recorder.phase == "starting"
     assert [event for event, _data, _id in link.sent] == ["start_recording"]
+
+
+@pytest.mark.parametrize("link_phase", ["connected", "connecting"])
+def test_gives_up_when_studio_never_sends_its_state(link_phase: str) -> None:
+    """Otherwise the belt stays held forever behind an unusable link."""
+    now = [0.0]
+    link = FakeLink(phase=link_phase, state=None)
+    recorder = AutoRecorder(lambda: link, clock=lambda: now[0])
+    recorder.enable(RecordingOptions())
+    assert recorder.update(0, None).hold_feed
+    now[0] = CONNECT_TIMEOUT_S + 1.0
+    assert not recorder.update(0, None).hold_feed
+    assert recorder.phase == "error"
+    assert "robot session" in recorder.status()["message"]
+    assert link.closed
 
 
 def test_stops_when_studio_stops_the_recording_or_the_link_fails() -> None:
