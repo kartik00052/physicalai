@@ -456,7 +456,7 @@ git worktree remove /tmp/physicalai-v0.2.0
 
 - Run the repository hooks on the files you changed (`prek run --files <files>`). `prek run --all-files` also reformats unrelated files elsewhere in the repository.
 - The ruff hook runs with `--unsafe-fixes` and can rewrite code, for example by collapsing a lambda into a bound method. Run the tests again after the hooks.
-- Tests that step a real simulation for seconds are marked `@pytest.mark.slow`. Run the quick set with `-m "not slow"` while iterating, and the full suite before pushing. In CI, pull requests that don't touch this plugin skip them: `PHYSICALAI_MUJOCO_SLOW_TESTS=false`, see `tests/conftest.py`. Pushes to `main` always run them.
+- Tests that step a real simulation for seconds are marked `@pytest.mark.slow`. Run the quick set with `-m "not slow"` while iterating, and the full suite before pushing.
 - Run the security scans used by CI:
 
   ```bash
