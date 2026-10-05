@@ -317,6 +317,20 @@ class ReBotB601RS:
         """Enable torque on all motors."""
         self._require_controller().enable_all()
 
+    def set_zero_position(self) -> None:
+        """Store the arm's current pose as zero on every motor.
+
+        Torque is disabled first, as the motors require; call :meth:`enable_torque` to resume control.
+        """
+        controller = self._require_controller()
+        controller.disable_all()
+        for motor in self._motors.values():
+            motor.set_zero_position()
+        self._gripper_prev_target_pos = None
+        self._gripper_prev_filtered_target_vel = None
+        self._gripper_prev_state_pos = None
+        self._gripper_open_stall_count = 0
+
     def _read_motor_states(self) -> list[MotorState]:
         if not self.is_connected():
             msg = "Robot is not connected. Call connect() first."

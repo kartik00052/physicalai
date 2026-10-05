@@ -357,6 +357,22 @@ class TestReBotB601RSAction:
         with pytest.raises(ConnectionError, match="not connected"):
             robot.send_action(np.zeros(7, dtype=np.float32))
 
+    def test_set_zero_position_disables_torque_and_zeroes_every_motor(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        controller = mock_motorbridge.Controller.return_value
+        controller.reset_mock()
+
+        robot.set_zero_position()
+
+        controller.disable_all.assert_called_once()
+        for motor in controller.mock_motors:
+            motor.set_zero_position.assert_called_once()
+
+    def test_set_zero_position_disconnected_raises(self, mock_motorbridge: MagicMock) -> None:
+        with pytest.raises(ConnectionError, match="not connected"):
+            _create_robot(mock_motorbridge).set_zero_position()
+
     def test_disable_enable_torque(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge)
         robot.connect()
