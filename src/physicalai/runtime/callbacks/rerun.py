@@ -172,6 +172,7 @@ class RerunCallback:
         rr.set_time("step", sequence=self._last_step)
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/inference", rr.Scalars(float(horizon)))
+        rr.log("inference/latency_ms", rr.Scalars(event.latency_s * 1000.0))
 
         # Inference latency stats as a live-updating table.
         self._latencies.append(event.latency_s)
@@ -359,16 +360,21 @@ class RerunCallback:
         queue_time = self._pred_horizon / self._fps if self._pred_horizon else 0
         headroom = queue_time - p99
 
-        md = (
-            f"| Metric | Value |\n"
-            f"|--------|-------|\n"
-            f"| **Last** | {last * 1000:.1f} ms |\n"
-            f"| **p50** | {p50 * 1000:.1f} ms |\n"
-            f"| **p95** | {p95 * 1000:.1f} ms |\n"
-            f"| **p99** | {p99 * 1000:.1f} ms |\n"
-            f"| **Queue headroom** | {headroom * 1000:.0f} ms |\n"
-            f"| Samples | {n} |"
-        )
+        lines = [
+            "| Metric | Value |",
+            "|---|---|",
+            f"| **Last (round-trip)** | {last * 1000:.1f} ms |",
+            f"| **p50** | {p50 * 1000:.1f} ms |",
+            f"| **p95** | {p95 * 1000:.1f} ms |",
+            f"| **p99** | {p99 * 1000:.1f} ms |",
+        ]
+
+        lines.extend([
+            f"| **Queue headroom** | {headroom * 1000:.0f} ms |",
+            f"| Samples | {n} |",
+        ])
+
+        md = "\n".join(lines)
         rr.log("inference/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
 
 
